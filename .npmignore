@@ -1,0 +1,2 @@
+# .npmignore intentionally left empty — using "files" field in package.json
+# for explicit allowlist of published files.

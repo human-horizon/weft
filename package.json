@@ -1,0 +1,63 @@
+{
+    "name": "@human-horizon/weft",
+    "version": "0.1.0",
+    "description": "TypeScript-native workflow engine for AI agent orchestration — code as config, no DSL",
+    "type": "module",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "bin": {
+        "weft": "./dist/cli.js"
+    },
+    "exports": {
+        ".": {
+            "import": "./dist/index.js",
+            "types": "./dist/index.d.ts"
+        }
+    },
+    "files": [
+        "dist"
+    ],
+    "sideEffects": false,
+    "engines": {
+        "node": ">=20"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/human-horizon/weft.git"
+    },
+    "homepage": "https://github.com/human-horizon/weft",
+    "bugs": {
+        "url": "https://github.com/human-horizon/weft/issues"
+    },
+    "publishConfig": {
+        "access": "public"
+    },
+    "scripts": {
+        "build": "tsc",
+        "check": "tsc --noEmit",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "clean": "rm -rf dist",
+        "prepublishOnly": "npx tsc && npx vitest run"
+    },
+    "devDependencies": {
+        "@types/node": "^22.0.0",
+        "typescript": "^5.7.0",
+        "vitest": "^4.1.8"
+    },
+    "keywords": [
+        "workflow",
+        "pipeline",
+        "orchestration",
+        "ai",
+        "agent",
+        "llm",
+        "typescript",
+        "weft"
+    ],
+    "license": "MIT",
+    "dependencies": {
+        "@earendil-works/pi-coding-agent": "^0.80.3",
+        "zod": "^4.4.3"
+    }
+}
