@@ -27,6 +27,89 @@ Requires Node.js 20+.
 
 ---
 
+## Quick Start
+
+### 1. Setup a new project
+
+```bash
+mkdir my-project && cd my-project
+weft install
+```
+
+This creates `.lore/weft/` with `package.json`, `pipelines/`, and `.gitignore`, then runs `pnpm install`.
+
+### 2. Create a pipeline
+
+```bash
+weft init my-pipeline
+```
+
+Edit `.lore/weft/pipelines/my-pipeline.ts`:
+
+```typescript
+export const meta = {
+    description: "Analyzes code for bugs",
+    args: [
+        { name: "path", type: "string", description: "Path to file" },
+    ],
+};
+
+export async function main(args: string[]) {
+    const path = args[0];
+    if (!path) {
+        console.error("Usage: weft run my-pipeline.ts <path>");
+        process.exit(1);
+    }
+    // ... your pipeline code
+}
+```
+
+### 3. Run it
+
+```bash
+weft run my-pipeline.ts ./src/main.ts
+```
+
+Or interactively:
+
+```bash
+weft
+# → Shows list of pipelines
+# → Asks for arguments based on meta
+# → Runs the selected one
+```
+
+### 4. Pipeline plan preview
+
+Before executing, weft shows the pipeline tree:
+
+```
+⚡ Pipeline plan:
+├── ◆ analyze
+│   model: free → home-pc/qwen-3.5-9b thinking: high [reviewer]
+└── ◆ report
+    model: medium → ollama-cloud/deepseek-v4-flash
+```
+
+Each prompt step shows: model tag → resolved model name, thinking level, and session name (if any).
+
+---
+
+## CLI Reference
+
+| Command | Description |
+|---------|-------------|
+| `weft run <file> [args...]` | Run a pipeline |
+| `weft list [dir]` | List available pipelines (recursively) |
+| `weft init <name>` | Create a new pipeline template |
+| `weft install` | Setup `.lore/weft/` in the project |
+| `weft` (no args) | Interactive mode — select and run |
+| `weft help [command]` | Show help |
+
+See [specs/cli.spec.md](./specs/cli.spec.md) for details.
+
+---
+
 ## Core concept: context accumulation
 
 Each step **adds** a named field to the context object. Everything accumulates.
@@ -64,7 +147,7 @@ Call the agent. Result is stored under `name` in the context.
 ```ts
 .prompt('analyze', (ctx) => `Analyze ${ctx.lang} code`, {
   session: 'my-session',  // optional: multi-turn
-  model: 'sonnet',         // optional: model level
+  model: 'sonnet',         // optional: model level (free, simple, medium, high, expert)
   schema: MySchema,        // optional: zod schema for structured response
   retry: 3,                // optional: retry on failure
   timeout: '30s',          // optional: per-step timeout
@@ -91,6 +174,18 @@ interface AgentResult {
   ok: boolean;
 }
 ```
+
+**Model levels** (resolved from `~/.ai/settings.json`):
+
+| Tag | Example model |
+|-----|---------------|
+| `free` | `home-pc/qwen-3.5-9b` |
+| `simple` | varies |
+| `medium` | varies |
+| `high` | varies |
+| `expert` | varies |
+
+You can also use a full model name like `"ollama-cloud/deepseek-v4-flash"`. Unknown short tags throw an error.
 
 ---
 
@@ -181,15 +276,50 @@ controller.abort();
 
 ---
 
+## Pipeline files — `main()` pattern
+
+Each pipeline is a `.ts` file with `export async function main(args: string[])`:
+
+```typescript
+// .lore/weft/pipelines/МойПайплайн.ts
+import { weave } from '@human-horizon/weft';
+
+export const meta = {
+    description: "What this pipeline does",
+    args: [
+        { name: "input", type: "string", description: "Input value" },
+    ],
+};
+
+export async function main(args: string[]) {
+    const input = args[0];
+    // ... pipeline logic
+}
+
+await main(process.argv.slice(2));
+```
+
+This makes the file both:
+- Importable programmatically (call `main(args)`)
+- Runnable directly via `weft run` or `bun/tsx`
+
+---
+
 ## Options Reference
 
 ### Step Options (`StepOpts`)
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
+| `session` | `string` | none | Session ID for multi-turn |
+| `model` | `string` | inherited | Model level or full name |
+| `thinking` | `string` | inherited | Thinking level |
+| `schema` | `z.ZodType` | none | Zod schema for response |
 | `retry` | `number` | `0` | Retries on failure |
-| `timeout` | `string` | none | Per-step timeout (`'30s'`, `'1m'`) |
-| `continueOnError` | `boolean` | `false` | Don't fail pipeline on this step |
+| `retryDelay` | `number` | `1000` | Initial retry delay (ms) |
+| `retryBackoff` | `'linear' \| 'exponential'` | none | Backoff strategy |
+| `timeout` | `string \| number` | none | Per-step timeout (`'30s'`, `'1m'`) |
+| `continueOnError` | `boolean` | `false` | Don't fail on this step |
 
 ### Run Options (`RunOpts`)
 
@@ -208,11 +338,36 @@ weave()           WorkflowImpl<Ctx>     PipelineImpl<Ctx>
    ├── .step()        │     (IR)           ├── add field to ctx
    ├── .when()        │                    ├── invoke agent
    ├── .parallel()    │                    ├── retry / timeout
-   ├── .clearSession()│                    └── validate zod schema
-   ├── .use()         │
-   └── .build()       ▼
-              Pipeline<Ctx>
+   ├── .clearSession()│                    ├── validate zod schema
+   ├── .use()         │                    └── resolve model
+   └── .build()       ▼                    ▼
+              Pipeline<Ctx>            RunOpts
 ```
+
+## Project Structure
+
+```
+project/
+├── .lore/
+│   └── weft/                      # weft config (separate package)
+│       ├── package.json           # @human-horizon/weft dependency
+│       ├── pipelines/             # pipeline .ts files
+│       ├── tsconfig.json
+│       └── .gitignore
+├── src/                           # project source code
+├── code-specs/                    # per-file specs (generated)
+├── specs/                         # project specs (generated)
+├── docs/                          # documentation
+└── package.json                   # project manifest
+```
+
+## Environment
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WEFT_PIPELINES_DIR` | `./pipelines/` | Pipelines directory |
+| `WEFT_PI_HOME` | `~/.ai/weft/pi/` | Pi environment |
+| `PI_CODING_AGENT_DIR` | `~/.pi/agent/` | Pi agent directory |
 
 ## License
 
