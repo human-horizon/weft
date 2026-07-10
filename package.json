@@ -1,6 +1,6 @@
 {
     "name": "@human-horizon/weft",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "description": "TypeScript-native workflow engine for AI agent orchestration — code as config, no DSL",
     "type": "module",
     "main": "./dist/index.js",

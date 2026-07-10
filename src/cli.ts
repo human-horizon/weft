@@ -52,6 +52,8 @@ async function main() {
             return cmdList(args[1]);
         case "init":
             return cmdInit(args[1]);
+        case "install":
+            return cmdInstall();
         case "interactive":
             return cmdInteractive();
         case "help":
@@ -75,6 +77,7 @@ ${bold("Usage:")}
   weft ${green("run")} ${dim("<file> [args...]")}    Run a pipeline
   weft ${green("list")} ${dim("[dir]")}              List pipelines
   weft ${green("init")} ${dim("<name>")}             Create a new pipeline
+  weft ${green("install")}                          Setup project: .lore/weft/ + pnpm install
   weft ${green("help")} ${dim("[command]")}           Show help
 
 ${bold("Interactive:")}
@@ -82,9 +85,10 @@ ${bold("Interactive:")}
 
 ${bold("Examples:")}
   weft run pipeline.ts "my topic"
-  weft run ./pipelines/ИсправьСтатью.ts ./article.json
+  weft run ./.lore/weft/pipelines/my-pipeline.ts
   weft list
   weft init my-pipeline
+  weft install
 
 ${dim("Environment:")}
   WEFT_PIPELINES_DIR    Pipeline directory (default: ./pipelines)
@@ -105,7 +109,7 @@ ${bold("Flags:")}
 ${bold("Examples:")}
   weft run pipeline.ts "topic"
   weft run ИсправьСтатью.ts ./article.json
-  weft run ./pipelines/НапишиСтатью.ts "Тревога" --dry-run
+  weft run ./.lore/weft/pipelines/НапишиСтатью.ts "Тревога" --dry-run
 `,
     list: `
 ${bold("weft list")} ${dim("[dir]")}
@@ -113,7 +117,7 @@ ${bold("weft list")} ${dim("[dir]")}
 List available pipeline files.
 
 ${bold("Arguments:")}
-  ${dim("[dir]")}    Directory to scan (default: WEFT_PIPELINES_DIR or ./pipelines)
+  ${dim("[dir]")}    Directory to scan (default: WEFT_PIPELINES_DIR or .lore/weft/pipelines)
 `,
     init: `
 ${bold("weft init")} ${dim("<name>")}
@@ -122,6 +126,18 @@ Create a new pipeline from template.
 
 ${bold("Arguments:")}
   ${dim("<name>")}    Pipeline name (without .ts)
+`,
+    install: `
+${bold("weft install")}
+
+Setup weft in the current project:
+  - Creates ${dim(".lore/weft/pipelines/")} folder for your pipeline files
+  - Creates ${dim(".lore/weft/package.json")} with weft dependency (if missing)
+  - Creates ${dim(".lore/weft/.gitignore")} (if missing)
+  - Runs ${dim("pnpm install")} in ${dim(".lore/weft/")}
+
+${bold("Examples:")}
+  cd my-project && weft install
 `,
 };
 
@@ -177,7 +193,7 @@ function cmdRun(runArgs: string[]) {
         extraArgs.splice(extraArgs.indexOf("--dry-run"), 1);
     }
 
-    const runtime = detectRuntime();
+    const runtime = detectRuntime(filePath);
     if (!runtime) {
         console.error(
             red(
@@ -313,6 +329,76 @@ await main(process.argv.slice(2));
     console.log(green(`✓ Created ${filePath}`));
 }
 
+// ── Install command ──────────────────────────────────────────────────────────
+
+function cmdInstall() {
+    const projectDir = cwd();
+
+    // 1. Create .lore/weft/ directory
+    const loreDir = resolve(projectDir, ".lore", "weft");
+    if (!existsSync(loreDir)) {
+        mkdirSync(loreDir, { recursive: true });
+        console.log(green(`✓ Created ${relative(projectDir, loreDir)}/`));
+    } else {
+        console.log(dim(`  ${relative(projectDir, loreDir)}/ already exists`));
+    }
+
+    // 2. Create .lore/weft/pipelines/ directory
+    const pipelinesDir = resolve(loreDir, "pipelines");
+    if (!existsSync(pipelinesDir)) {
+        mkdirSync(pipelinesDir, { recursive: true });
+        console.log(green(`✓ Created ${relative(projectDir, pipelinesDir)}/`));
+    } else {
+        console.log(dim(`  ${relative(projectDir, pipelinesDir)}/ already exists`));
+    }
+
+    // 3. Create .lore/weft/package.json
+    const lorePkgPath = resolve(loreDir, "package.json");
+    if (!existsSync(lorePkgPath)) {
+        const pkg = {
+            name: `${basename(projectDir)}-weft`,
+            private: true,
+            type: "module",
+            dependencies: {
+                "@human-horizon/weft": "^0.1.0",
+            },
+            devDependencies: {
+                "@types/node": "^22.0.0",
+                tsx: "^4.19.0",
+                typescript: "^5.7.0",
+            },
+        };
+        writeFileSync(lorePkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
+        console.log(green(`✓ Created ${relative(projectDir, lorePkgPath)}`));
+    } else {
+        console.log(dim(`  ${relative(projectDir, lorePkgPath)} already exists`));
+    }
+
+    // 4. Create .lore/weft/.gitignore
+    const loreGitignorePath = resolve(loreDir, ".gitignore");
+    if (!existsSync(loreGitignorePath)) {
+        const gitignore = "node_modules\npnpm-lock.yaml\n";
+        writeFileSync(loreGitignorePath, gitignore, "utf-8");
+        console.log(green(`✓ Created ${relative(projectDir, loreGitignorePath)}`));
+    } else {
+        console.log(dim(`  ${relative(projectDir, loreGitignorePath)} already exists`));
+    }
+
+    // 5. Run pnpm install in .lore/weft/
+    console.log(dim(`\n📦 Running pnpm install in .lore/weft/...`));
+    try {
+        execSync("CI=true pnpm install", {
+            stdio: "inherit",
+            cwd: loreDir,
+        });
+        console.log(green(`\n✓ Done! Run ${cyan("weft")} to interactively select a pipeline.`));
+    } catch (err) {
+        console.error(red(`\n❌ pnpm install failed`));
+        console.error(dim(`  Make sure pnpm is installed: npm install -g pnpm`));
+        exit(1);
+    }
+}
+
 // ── Interactive mode ────────────────────────────────────────────────────────
 
 interface ArgMeta {
@@ -407,7 +493,7 @@ async function cmdInteractive() {
     console.log(`\n${dim("Running")} ${cyan(basename(selectedFile, ".ts"))} ${dim("with args:")} ${collectedArgs.join(" ")}`);
     console.log();
 
-    const runtime = detectRuntime();
+    const runtime = detectRuntime(filePath);
     if (!runtime) {
         console.error(red("❌ No TypeScript runtime found. Install bun, tsx, or ts-node."));
         exit(1);
@@ -507,7 +593,19 @@ function extractMeta(filePath: string): PipelineMeta | null {
 
 // ── Runtime detection ────────────────────────────────────────────────────────
 
-function detectRuntime(): string | null {
+function detectRuntime(filePath?: string): string | null {
+    // If file is in .lore/, prefer tsx over bun (bun doesn't handle pnpm symlinks well)
+    if (filePath?.includes(".lore")) {
+        try {
+            execSync("tsx --version", { stdio: "ignore" });
+            return "tsx";
+        } catch { /* fall through */ }
+        try {
+            execSync("npx --version", { stdio: "ignore" });
+            return "npx tsx";
+        } catch { /* fall through */ }
+    }
+
     // 1. bun
     try {
         execSync("bun --version", { stdio: "ignore" });
