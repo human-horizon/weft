@@ -35,7 +35,7 @@ try {
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
-const PIPELINES_DIR = env.WEFT_PIPELINES_DIR || "./pipelines";
+const PIPELINES_DIR = env.WEFT_PIPELINES_DIR || ".lore/weft/pipelines";
 const WEFT_PI_HOME = env.WEFT_PI_HOME || join(homedir(), ".ai", "weft", "pi");
 
 // ── Main ────────────────────────────────────────────────────────────────────
@@ -91,7 +91,7 @@ ${bold("Examples:")}
   weft install
 
 ${dim("Environment:")}
-  WEFT_PIPELINES_DIR    Pipeline directory (default: ./pipelines)
+  WEFT_PIPELINES_DIR    Pipeline directory (default: .lore/weft/pipelines)
   WEFT_PI_PATH          Path to pi CLI
 `,
     run: `
@@ -132,8 +132,7 @@ ${bold("weft install")}
 
 Setup weft in the current project:
   - Creates ${dim(".lore/weft/pipelines/")} folder for your pipeline files
-  - Creates ${dim(".lore/weft/package.json")} with weft dependency (if missing)
-  - Creates ${dim(".lore/weft/.gitignore")} (if missing)
+  - Creates ${dim(".lore/weft/package.json")} with latest weft dependency (if missing)
   - Runs ${dim("pnpm install")} in ${dim(".lore/weft/")}
 
 ${bold("Examples:")}
@@ -352,49 +351,58 @@ function cmdInstall() {
         console.log(dim(`  ${relative(projectDir, pipelinesDir)}/ already exists`));
     }
 
-    // 3. Create .lore/weft/package.json
+    // 3. Create or update .lore/weft/package.json with latest weft version
     const lorePkgPath = resolve(loreDir, "package.json");
-    if (!existsSync(lorePkgPath)) {
-        const pkg = {
+    let weftVersion: string;
+    try {
+        weftVersion = execSync("pnpm view @human-horizon/weft version", {
+            stdio: ["ignore", "pipe", "ignore"],
+        }).toString().trim();
+        weftVersion = `^${weftVersion}`;
+    } catch {
+        weftVersion = "latest";
+    }
+
+    type InstallPackageJson = {
+        name?: string;
+        private?: boolean;
+        type?: string;
+        dependencies?: Record<string, string>;
+        devDependencies?: Record<string, string>;
+    };
+
+    const packageExists = existsSync(lorePkgPath);
+    const pkg: InstallPackageJson = packageExists
+        ? JSON.parse(readFileSync(lorePkgPath, "utf-8")) as InstallPackageJson
+        : {
             name: `${basename(projectDir)}-weft`,
             private: true,
             type: "module",
-            dependencies: {
-                "@human-horizon/weft": "^0.1.0",
-            },
             devDependencies: {
                 "@types/node": "^22.0.0",
                 tsx: "^4.19.0",
                 typescript: "^5.7.0",
             },
         };
-        writeFileSync(lorePkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
-        console.log(green(`✓ Created ${relative(projectDir, lorePkgPath)}`));
-    } else {
-        console.log(dim(`  ${relative(projectDir, lorePkgPath)} already exists`));
-    }
 
-    // 4. Create .lore/weft/.gitignore
-    const loreGitignorePath = resolve(loreDir, ".gitignore");
-    if (!existsSync(loreGitignorePath)) {
-        const gitignore = "node_modules\npnpm-lock.yaml\n";
-        writeFileSync(loreGitignorePath, gitignore, "utf-8");
-        console.log(green(`✓ Created ${relative(projectDir, loreGitignorePath)}`));
-    } else {
-        console.log(dim(`  ${relative(projectDir, loreGitignorePath)} already exists`));
-    }
+    pkg.dependencies = {
+        ...pkg.dependencies,
+        "@human-horizon/weft": weftVersion,
+    };
+    writeFileSync(lorePkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
+    const packageAction = packageExists ? "Updated" : "Created";
+    console.log(green(`✓ ${packageAction} ${relative(projectDir, lorePkgPath)} (weft@${weftVersion})`));
 
-    // 5. Run pnpm install in .lore/weft/
+    // 4. Run pnpm install in .lore/weft/
     console.log(dim(`\n📦 Running pnpm install in .lore/weft/...`));
     try {
-        execSync("CI=true pnpm install", {
+        execSync("pnpm install --ignore-scripts --config.minimum-release-age=0", {
             stdio: "inherit",
             cwd: loreDir,
         });
         console.log(green(`\n✓ Done! Run ${cyan("weft")} to interactively select a pipeline.`));
-    } catch (err) {
+    } catch {
         console.error(red(`\n❌ pnpm install failed`));
-        console.error(dim(`  Make sure pnpm is installed: npm install -g pnpm`));
         exit(1);
     }
 }
@@ -414,15 +422,11 @@ interface PipelineMeta {
 }
 
 async function cmdInteractive() {
-    // Determine directory: use CWD if it has .ts files, otherwise PIPELINES_DIR
-    const cwdFiles = readdirSync(cwd()).filter((f) => f.endsWith(".ts"));
-    const dir = cwdFiles.length > 0
-        ? cwd()
-        : resolve(cwd(), PIPELINES_DIR);
+    const dir = resolve(cwd(), PIPELINES_DIR);
 
     if (!existsSync(dir)) {
         console.error(yellow(`⚠  Directory not found: ${dir}`));
-        console.error(dim(`  Set WEFT_PIPELINES_DIR or run from a directory with .ts files.`));
+        console.error(dim(`  Run weft install or set WEFT_PIPELINES_DIR.`));
         exit(1);
     }
 

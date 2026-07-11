@@ -1,6 +1,6 @@
 {
     "name": "@human-horizon/weft",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "description": "TypeScript-native workflow engine for AI agent orchestration — code as config, no DSL",
     "type": "module",
     "main": "./dist/index.js",
@@ -57,7 +57,10 @@
     ],
     "license": "MIT",
     "dependencies": {
-        "@earendil-works/pi-coding-agent": "^0.80.3",
+        "@earendil-works/pi-agent-core": "0.80.3",
+        "@earendil-works/pi-ai": "0.80.3",
+        "@earendil-works/pi-coding-agent": "0.80.3",
+        "@earendil-works/pi-tui": "0.80.3",
         "zod": "^4.4.3"
     }
 }

@@ -19,7 +19,8 @@
 
 - `<file>` — путь к `.ts` файлу (абсолютный или относительный)
 - `[args...]` — аргументы, передаются в `main(args)` пайплайна
-- Если файл не найден — ищет в `WEFT_PIPELINES_DIR` (по умолчанию `./pipelines/` или `.lore/weft/pipelines/`)
+- Если файл не найден относительно текущей директории — ищет в `WEFT_PIPELINES_DIR`
+- `WEFT_PIPELINES_DIR` по умолчанию равен `.lore/weft/pipelines/`
 
 **Поиск рантайма:**
 1. Если файл в `.lore/` — `tsx` (bun не дружит с pnpm symlinks)
@@ -44,7 +45,7 @@
 
 Показать все `.ts` файлы (с `export async function main()`) рекурсивно.
 
-- `[dir]` — путь к директории (по умолчанию `./pipelines/` или `WEFT_PIPELINES_DIR`)
+- `[dir]` — путь к директории (по умолчанию `WEFT_PIPELINES_DIR` или `.lore/weft/pipelines/`)
 - Фильтрует файлы: показывает только те, где есть `export async function main`
 - Подпапки показываются как `[subdir]`
 - Описание извлекается из `export const meta`
@@ -54,7 +55,7 @@
 Создать шаблон нового пайплайна.
 
 - `<name>` — имя файла (без `.ts`)
-- Создаёт `<name>.ts` в `WEFT_PIPELINES_DIR` или `./pipelines/`
+- Создаёт `<name>.ts` в `WEFT_PIPELINES_DIR` или `.lore/weft/pipelines/`
 - Шаблон включает `export const meta` для интерактивного режима
 
 ### `weft install`
@@ -62,9 +63,11 @@
 Настроить проект для работы с weft.
 
 - Выполняется из корня проекта
-- Создаёт `.lore/weft/` с `package.json`, `pipelines/`, `.gitignore`
-- Запускает `pnpm install` в `.lore/weft/`
-- Используется для первоначальной настройки нового проекта
+- Создаёт `.lore/weft/package.json` и `.lore/weft/pipelines/`
+- Обновляет `@human-horizon/weft` в существующем `package.json` до последней опубликованной версии
+- Не создаёт `.gitignore` и `pnpm-workspace.yaml`
+- Запускает `pnpm install --ignore-scripts --config.minimum-release-age=0` в `.lore/weft/`, чтобы pnpm не создавал workspace-конфигурацию автоматически
+- Используется для первоначальной настройки и обновления проекта
 
 **Использование:**
 ```bash
@@ -76,7 +79,7 @@ weft  # интерактивный выбор пайплайна
 
 Интерактивный режим — показывает список пайплайнов и запускает выбранный.
 
-1. Рекурсивно сканирует `.ts` файлы (фильтрует по `main()`)
+1. Рекурсивно сканирует `WEFT_PIPELINES_DIR` или `.lore/weft/pipelines/` (фильтрует по `main()`)
 2. Извлекает `export const meta` для отображения описания
 3. Запрашивает номер пайплайна
 4. Если есть `meta.args` — запрашивает значения с подсказками
@@ -105,10 +108,10 @@ Weft-проект хранит конфигурацию в `.lore/weft/`:
 project/
 ├── .lore/
 │   └── weft/                          # отдельный package.json + node_modules
-│       ├── package.json               # зависит на @human-horizon/weft
-│       ├── pipelines/                 # .ts файлы пайплайнов
-│       ├── tsconfig.json
-│       └── .gitignore                 # node_modules, pnpm-lock.yaml
+│       ├── package.json               # зависит от последней версии @human-horizon/weft
+│       ├── pnpm-lock.yaml             # создаётся pnpm
+│       ├── node_modules/              # создаётся pnpm
+│       └── pipelines/                 # .ts файлы пайплайнов
 ├── src/                               # код проекта
 └── package.json                       # основной проект
 ```
@@ -117,7 +120,7 @@ project/
 
 | Переменная | Описание | По умолчанию |
 |-----------|----------|-------------|
-| `WEFT_PIPELINES_DIR` | Директория с пайплайнами | `./pipelines/` или `.lore/weft/pipelines/` |
+| `WEFT_PIPELINES_DIR` | Директория с пайплайнами | `.lore/weft/pipelines/` |
 | `WEFT_PI_HOME` | Pi-окружение | `~/.ai/weft/pi/` |
 | `WEFT_PI_PATH` | Путь к pi CLI | автоопределение |
 

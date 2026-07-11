@@ -1,7 +1,5 @@
-node_modules
-dist
-.lore
 
 .DS_Store
-
+.lore
 dist
+node_modules
