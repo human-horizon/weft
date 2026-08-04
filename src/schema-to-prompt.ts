@@ -6,12 +6,17 @@ import { z } from "zod";
  */
 export function schemaToPrompt(schema: z.ZodType): string {
   const shape = describeSchema(schema);
+  const example = buildExample(schema);
   return [
     "Respond in valid JSON only. No markdown fences, no commentary.",
     "Expected format:",
     shape,
     "",
-    "Your response must be VALID JSON matching this schema exactly.",
+    "Your response must be a JSON object containing the actual data for the fields above.",
+    "Do NOT echo or repeat the schema description.",
+    "Do NOT use TypeScript syntax — values like `string`, `number`, `boolean` are not valid JSON values.",
+    "Example of correct answer:",
+    example,
   ].join("\n");
 }
 
@@ -92,5 +97,75 @@ function describeSchema(schema: z.ZodType, indent = 0): string {
 
     default:
       return "unknown";
+  }
+}
+
+// ── Minimal example value generator ────────────────────────────────────────
+
+function buildExample(schema: z.ZodType, indent = 0): string {
+  const def = (schema as any).def;
+  if (!def) return "null";
+
+  switch (def.type) {
+    case "object": {
+      const shape = def.shape as Record<string, z.ZodType> | undefined;
+      if (!shape || Object.keys(shape).length === 0) return "{}";
+      const pad = "  ".repeat(indent);
+      const innerPad = "  ".repeat(indent + 1);
+      const entries = Object.entries(shape).map(([key, value]) => {
+        return `${innerPad}"${key}": ${exampleValue(value, indent + 1)}`;
+      });
+      return `{\n${entries.join(",\n")}\n${pad}}`;
+    }
+    default:
+      return exampleValue(schema, indent);
+  }
+}
+
+function exampleValue(schema: z.ZodType, indent = 0): string {
+  const def = (schema as any).def;
+  if (!def) return "null";
+
+  switch (def.type) {
+    case "string":
+      return `""`;
+    case "number":
+      return `0`;
+    case "boolean":
+      return `false`;
+    case "null":
+      return `null`;
+    case "undefined":
+      return `null`;
+    case "enum": {
+      const entries = Object.values(def.entries as Record<string, string>);
+      return JSON.stringify(entries[0] ?? "");
+    }
+    case "literal": {
+      const values = def.values as unknown[];
+      return JSON.stringify(values[0] ?? null);
+    }
+    case "array":
+      return `[]`;
+    case "tuple": {
+      const items = def.items as z.ZodType[];
+      return `[${items.map((i) => exampleValue(i, indent)).join(", ")}]`;
+    }
+    case "record":
+      return `{}`;
+    case "union": {
+      const options = def.options as z.ZodType[];
+      const first = options[0];
+      return first ? exampleValue(first, indent) : `null`;
+    }
+    case "optional":
+    case "nullable": {
+      const inner = def.innerType as z.ZodType;
+      return exampleValue(inner, indent);
+    }
+    case "object":
+      return buildExample(schema, indent);
+    default:
+      return `null`;
   }
 }

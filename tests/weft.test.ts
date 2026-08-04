@@ -330,7 +330,7 @@ describe("Zod schema to prompt", () => {
     const prompt = schemaToPrompt(schema);
     expect(prompt).toContain('"name": string');
     expect(prompt).toContain('"age": number');
-    expect(prompt).toContain("VALID JSON");
+    expect(prompt).toContain("JSON object containing the actual data");
   });
 
   it("should describe nested objects", async () => {
@@ -363,5 +363,140 @@ describe("Zod schema to prompt", () => {
     });
     const prompt = schemaToPrompt(schema);
     expect(prompt).toContain('"email": string (optional)');
+  });
+
+  it("should include example data and forbid schema echo", async () => {
+    const { schemaToPrompt } = await import("../src/schema-to-prompt.js");
+    const schema = z.object({
+      title: z.string(),
+      content: z.string(),
+      keywords: z.array(z.string()),
+    });
+    const prompt = schemaToPrompt(schema);
+    expect(prompt).toContain("Do NOT echo or repeat the schema description");
+    expect(prompt).toContain("Do NOT use TypeScript syntax");
+    expect(prompt).toContain("Example of correct answer:");
+    expect(prompt).toContain('"title": ""');
+    expect(prompt).toContain('"keywords": []');
+  });
+});
+
+// ── Schema echo detection tests ─────────────────────────────────────────────
+
+describe("Schema echo detection", () => {
+  it("detects TS-style type annotations", async () => {
+    const { looksLikeSchemaEcho } = await import("../src/zod-middleware.js");
+    expect(looksLikeSchemaEcho("{ title: string, content: string }")).toBe(true);
+    expect(looksLikeSchemaEcho('[{ name: "a" }, { name: "b" }]')).toBe(false);
+    expect(looksLikeSchemaEcho("{ title: number, age: boolean }")).toBe(true);
+  });
+
+  it("detects tuple rest syntax", async () => {
+    const { looksLikeSchemaEcho } = await import("../src/zod-middleware.js");
+    expect(looksLikeSchemaEcho("{ tags: [string, ...] }")).toBe(true);
+    expect(looksLikeSchemaEcho('{ tags: ["a", "b"] }')).toBe(false);
+  });
+
+  it("returns false for empty or plain JSON", async () => {
+    const { looksLikeSchemaEcho } = await import("../src/zod-middleware.js");
+    expect(looksLikeSchemaEcho("")).toBe(false);
+    expect(looksLikeSchemaEcho('{"title":"hello","tags":["a"]}')).toBe(false);
+  });
+});
+
+// ── Schema echo handling tests ──────────────────────────────────────────────
+
+describe("Schema echo handling", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockInvokeAgent.mockReset();
+  });
+
+  it("should send an enhanced retry prompt when schema echo is detected", async () => {
+    // First response: TS-shape echo, second: valid data
+    mockInvokeAgent
+      .mockResolvedValueOnce(
+        makeResult({
+          stdout: "{ title: string, content: string, keywords: [string, ...] }",
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeResult({
+          stdout: JSON.stringify({
+            title: "Hello",
+            content: "World",
+            keywords: ["a", "b"],
+          }),
+        }),
+      );
+
+    const EchoSchema = z.object({
+      title: z.string(),
+      content: z.string(),
+      keywords: z.array(z.string()),
+    });
+
+    const pipeline = weave("test")
+      .prompt("write", () => "write", { schema: EchoSchema })
+      .build();
+
+    const result = await pipeline.run({});
+
+    expect(result.write).toEqual({
+      title: "Hello",
+      content: "World",
+      keywords: ["a", "b"],
+    });
+    expect(mockInvokeAgent).toHaveBeenCalledTimes(2);
+
+    // Second call (retry) must contain the BAD/GOOD hint
+    const retryCall = mockInvokeAgent.mock.calls[1]?.[0] as string;
+    expect(retryCall).toContain("BAD (schema echo");
+    expect(retryCall).toContain("GOOD (actual JSON data");
+  });
+
+  it("should throw WeftSchemaValidationError with looksLikeSchemaEcho=true on final echo", async () => {
+    mockInvokeAgent.mockResolvedValue(
+      makeResult({
+        stdout: "{ title: string, content: string, keywords: [string, ...] }",
+      }),
+    );
+
+    const EchoSchema = z.object({
+      title: z.string(),
+      content: z.string(),
+      keywords: z.array(z.string()),
+    });
+
+    const pipeline = weave("test")
+      .prompt("write", () => "write", { schema: EchoSchema })
+      .build();
+
+    const err = (await pipeline.run({}).catch((e) => e)) as WeftSchemaValidationError;
+
+    expect(err).toBeInstanceOf(WeftSchemaValidationError);
+    expect(err.looksLikeSchemaEcho).toBe(true);
+    expect(err.message).toContain("Possible cause");
+    expect(err.message).toContain("schema description");
+  });
+
+  it("should throw WeftSchemaValidationError with looksLikeSchemaEcho=false for plain invalid JSON", async () => {
+    mockInvokeAgent.mockResolvedValue(
+      makeResult({ stdout: "{ broken json without type annotations" }),
+    );
+
+    const EchoSchema = z.object({
+      title: z.string(),
+    });
+
+    const pipeline = weave("test")
+      .prompt("write", () => "write", { schema: EchoSchema })
+      .build();
+
+    const err = (await pipeline.run({}).catch((e) => e)) as WeftSchemaValidationError;
+
+    expect(err).toBeInstanceOf(WeftSchemaValidationError);
+    expect(err.looksLikeSchemaEcho).toBe(false);
+    expect(err.message).not.toContain("Possible cause");
   });
 });

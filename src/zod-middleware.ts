@@ -17,12 +17,14 @@ export class WeftSchemaValidationError extends Error {
     extractedResponse: string
     validationIssues: ValidationIssue[]
     schemaDescription: string
+    looksLikeSchemaEcho: boolean
 
     constructor(opts: {
         rawResponse: string
         extractedResponse: string
         validationIssues: ValidationIssue[]
         schemaDescription: string
+        looksLikeSchemaEcho?: boolean
     }) {
         super(formatSchemaValidationError(opts))
         this.name = "WeftSchemaValidationError"
@@ -30,6 +32,7 @@ export class WeftSchemaValidationError extends Error {
         this.extractedResponse = opts.extractedResponse
         this.validationIssues = opts.validationIssues
         this.schemaDescription = opts.schemaDescription
+        this.looksLikeSchemaEcho = opts.looksLikeSchemaEcho ?? false
     }
 }
 
@@ -40,12 +43,13 @@ function formatSchemaValidationError(opts: {
     extractedResponse: string
     validationIssues: ValidationIssue[]
     schemaDescription: string
+    looksLikeSchemaEcho?: boolean
 }): string {
     const issues = opts.validationIssues
         .map((issue) => `  - ${issue.path}: ${issue.message}`)
         .join("\n")
 
-    return [
+    const sections = [
         "Schema validation failed: the model response does not match the expected schema.",
         "",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
@@ -67,7 +71,19 @@ function formatSchemaValidationError(opts: {
         "Expected schema",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         opts.schemaDescription,
-    ].join("\n")
+    ]
+
+    if (opts.looksLikeSchemaEcho) {
+        sections.push(
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "Possible cause",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "The model response looks like a schema description (TypeScript-style type annotations like `: string`, `: number`, or tuple syntax like `[string, ...]`) rather than actual data. The agent may have echoed back the schema prompt instead of generating real values. Try rephrasing your prompt, switching to a more compliant model, or removing the schema requirement.",
+        )
+    }
+
+    return sections.join("\n")
 }
 
 // ── Collect Zod issues into a flat list ─────────────────────────────────────
@@ -109,6 +125,40 @@ function extractJson(text: string): string {
     return text.trim()
 }
 
+// ── Detect "schema echo" — model repeated the schema description ────────────
+//
+// Looks for TypeScript-style type annotations or tuple rest patterns that
+// indicate the model copied the schema-prompt instead of generating data.
+
+const SCHEMA_ECHO_RE =
+    /:\s*(string|number|boolean|unknown|null|undefined|any)\b|\[\s*(string|number|boolean|\w+\s*,\s*\.\.\.)\s*\]|\btype\s+\w+\s*=\s*\{/
+
+export function looksLikeSchemaEcho(text: string): boolean {
+    if (!text) return false
+    return SCHEMA_ECHO_RE.test(text)
+}
+
+// ── Build retry hint with BAD/GOOD example when schema echo is detected ────
+
+function buildRetryHint(err: unknown, extractedJson: string): string {
+    const base = `Previous response was invalid: ${String(err)}\nPlease fix and retry.`
+    if (!looksLikeSchemaEcho(extractedJson)) return base
+
+    return [
+        base,
+        "",
+        "⚠ Your previous response looked like a schema description, not data.",
+        "",
+        "BAD (schema echo — do NOT return this):",
+        "{ title: string, content: string, keywords: [string, ...] }",
+        "",
+        "GOOD (actual JSON data — return THIS form):",
+        '{ "title": "...", "content": "...", "keywords": ["..."] }',
+        "",
+        "Return a JSON object with real values: strings in double quotes, numbers without quotes, arrays as [item1, item2], booleans as true/false.",
+    ].join("\n")
+}
+
 // ── Invoke with schema validation ───────────────────────────────────────────
 
 export async function invokeWithSchema<T>(
@@ -118,9 +168,7 @@ export async function invokeWithSchema<T>(
 ): Promise<T> {
     const maxRetries = 1
     const schemaDescription = schemaToPrompt(schema)
-    let currentPrompt = `${prompt}
-
-${schemaDescription}`
+    let currentPrompt = `${prompt}\n\n${schemaDescription}`
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
         const result = await invokeAgent(currentPrompt, opts)
@@ -142,9 +190,11 @@ ${schemaDescription}`
                     extractedResponse,
                     validationIssues: collectValidationIssuesFromError(err),
                     schemaDescription,
+                    looksLikeSchemaEcho: looksLikeSchemaEcho(extractedResponse),
                 })
             }
-            currentPrompt = `${prompt}\n\n${schemaDescription}\n\nPrevious response was invalid: ${String(err)}\nPlease fix and retry.`
+            const extractedJson = extractJson(result.stdout)
+            currentPrompt = `${prompt}\n\n${schemaDescription}\n\n${buildRetryHint(err, extractedJson)}`
         }
     }
 
