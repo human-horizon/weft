@@ -120,7 +120,14 @@ function buildCliArgs(
         thinking?: string;
     },
 ): string[] {
-    const args: string[] = ["--mode", "json", "--no-session"];
+    const args: string[] = ["--mode", "json"];
+
+    // Session: --session <name> if provided, else --no-session (stateless).
+    if (opts.session) {
+        args.push("--session", opts.session);
+    } else {
+        args.push("--no-session");
+    }
 
     // Set model if specified
     if (opts.model) {
