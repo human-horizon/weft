@@ -29,7 +29,7 @@ function describeSchema(schema: z.ZodType, indent = 0): string {
       if (!shape || Object.keys(shape).length === 0) return "{}";
       const entries = Object.entries(shape).map(([key, value]) => {
         const desc = (value as any).description ?? describeSchema(value, indent + 1);
-        return `${pad}  ${key}: ${desc}`;
+        return `${pad}"${key}": ${desc}`;
       });
       return `{\n${entries.join(",\n")}\n${pad}}`;
     }
@@ -37,7 +37,7 @@ function describeSchema(schema: z.ZodType, indent = 0): string {
     case "array": {
       const element = def.element as z.ZodType;
       const inner = describeSchema(element, indent);
-      return `[${inner}, ...]`;
+      return `[${inner}]`;
     }
 
     case "enum": {
