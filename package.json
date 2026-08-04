@@ -1,6 +1,6 @@
 {
     "name": "@human-horizon/weft",
-    "version": "0.3.5",
+    "version": "0.3.6",
     "description": "TypeScript-native workflow engine for AI agent orchestration — code as config, no DSL",
     "type": "module",
     "main": "./dist/index.js",
@@ -32,11 +32,6 @@
     "publishConfig": {
         "access": "public"
     },
-    "pnpm": {
-        "overrides": {
-            "@aws-sdk/*": "3.1048.0"
-        }
-    },
     "scripts": {
         "build": "tsc",
         "check": "tsc --noEmit",
@@ -46,7 +41,7 @@
         "prepublishOnly": "npx tsc && npx vitest run"
     },
     "devDependencies": {
-        "@types/node": "^22.0.0",
+        "@types/node": "^22.19.19",
         "typescript": "^5.7.0",
         "vitest": "^4.1.8"
     },
@@ -62,10 +57,6 @@
     ],
     "license": "MIT",
     "dependencies": {
-        "@earendil-works/pi-agent-core": "0.83.0",
-        "@earendil-works/pi-ai": "0.83.0",
-        "@earendil-works/pi-coding-agent": "0.83.0",
-        "@earendil-works/pi-tui": "0.83.0",
         "zod": "^4.4.3"
     }
 }

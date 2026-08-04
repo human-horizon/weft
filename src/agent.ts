@@ -1,27 +1,15 @@
 import { spawn } from "node:child_process";
-import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readdirSync, existsSync, rmSync, readFileSync } from "node:fs";
 import type { AgentResult } from "./types.js";
 
-// ── Resolve pi from weft's own node_modules ────────────────────────────────
+// ── Resolve pi from PATH ────────────────────────────────────────────────────
 
-const require = createRequire(import.meta.url);
-let agentPath: string;
+const agentPath = "pi";
 
 const WEFT_PI_HOME =
     process.env.WEFT_PI_HOME || join(homedir(), ".ai", "weft", "pi");
-
-try {
-    agentPath = require.resolve("@earendil-works/pi-coding-agent/dist/cli.js");
-} catch {
-    agentPath = "pi";
-}
-
-export function setAgentPath(path: string): void {
-    agentPath = path;
-}
 
 // ── Session cleanup ─────────────────────────────────────────────────────────
 
