@@ -13,6 +13,7 @@ vi.mock("../src/agent.js", () => ({
 import { z } from "zod";
 import { weave } from "../src/builder.js";
 import type { AgentResult } from "../src/types.js";
+import { WeftSchemaValidationError } from "../src/zod-middleware.js";
 
 const mockInvokeAgent = (await import("../src/agent.js")).invokeAgent as ReturnType<
   typeof vi.fn
@@ -175,6 +176,55 @@ describe("Weft Executor", () => {
       bugs: [{ severity: "low", description: "minor" }],
     });
     expect(mockInvokeAgent).toHaveBeenCalledTimes(2);
+  });
+
+  it("should throw a pretty error on final invalid JSON failure", async () => {
+    mockInvokeAgent.mockResolvedValue(makeResult({ stdout: "not valid json" }));
+
+    const pipeline = weave("test")
+      .prompt("audit", () => "audit", { schema: AnalyzeSchema })
+      .build();
+
+    const err = await pipeline.run({}).catch((e) => e) as WeftSchemaValidationError;
+
+    expect(err).toBeInstanceOf(WeftSchemaValidationError);
+    expect(err.rawResponse).toBe("not valid json");
+    expect(err.extractedResponse).toBe("not valid json");
+    expect(err.validationIssues).toEqual([
+      {
+        path: "(root)",
+        message: expect.stringContaining("Failed to parse JSON"),
+      },
+    ]);
+  });
+
+  it("should throw a pretty error with Zod issues on final validation failure", async () => {
+    mockInvokeAgent.mockResolvedValue(
+      makeResult({
+        stdout: JSON.stringify({
+          bugs: [{ severity: "critical", description: "crash" }],
+        }),
+      }),
+    );
+
+    const pipeline = weave("test")
+      .prompt("audit", () => "audit", { schema: AnalyzeSchema })
+      .build();
+
+    const err = await pipeline.run({}).catch((e) => e) as WeftSchemaValidationError;
+
+    expect(err).toBeInstanceOf(WeftSchemaValidationError);
+    expect(err.rawResponse).toBe(
+      JSON.stringify({ bugs: [{ severity: "critical", description: "crash" }] }),
+    );
+    expect(err.validationIssues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: "bugs.0.severity",
+          message: expect.any(String),
+        }),
+      ]),
+    );
   });
 
   it("should handle parallel execution", async () => {

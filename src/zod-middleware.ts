@@ -1,62 +1,161 @@
-import type { z } from "zod";
-import type { AgentResult, PromptOpts } from "./types.js";
-import { invokeAgent } from "./agent.js";
-import { schemaToPrompt } from "./schema-to-prompt.js";
+import { z } from "zod"
+import type { AgentResult, PromptOpts } from "./types.js"
+import { invokeAgent } from "./agent.js"
+import { schemaToPrompt } from "./schema-to-prompt.js"
+
+// ── Validation issue shape ───────────────────────────────────────────────────
+
+type ValidationIssue = {
+    path: string
+    message: string
+}
+
+// ── Custom error for schema validation failures ─────────────────────────────
+
+export class WeftSchemaValidationError extends Error {
+    rawResponse: string
+    extractedResponse: string
+    validationIssues: ValidationIssue[]
+    schemaDescription: string
+
+    constructor(opts: {
+        rawResponse: string
+        extractedResponse: string
+        validationIssues: ValidationIssue[]
+        schemaDescription: string
+    }) {
+        super(formatSchemaValidationError(opts))
+        this.name = "WeftSchemaValidationError"
+        this.rawResponse = opts.rawResponse
+        this.extractedResponse = opts.extractedResponse
+        this.validationIssues = opts.validationIssues
+        this.schemaDescription = opts.schemaDescription
+    }
+}
+
+// ── Format the full error message for humans ────────────────────────────────
+
+function formatSchemaValidationError(opts: {
+    rawResponse: string
+    extractedResponse: string
+    validationIssues: ValidationIssue[]
+    schemaDescription: string
+}): string {
+    const issues = opts.validationIssues
+        .map((issue) => `  - ${issue.path}: ${issue.message}`)
+        .join("\n")
+
+    return [
+        "Schema validation failed: the model response does not match the expected schema.",
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "Raw model response",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        opts.rawResponse,
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "Extracted JSON",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        opts.extractedResponse,
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "Validation errors",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        issues,
+        "",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "Expected schema",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        opts.schemaDescription,
+    ].join("\n")
+}
+
+// ── Collect Zod issues into a flat list ─────────────────────────────────────
+
+function collectValidationIssues(error: z.ZodError): ValidationIssue[] {
+    return error.issues.map((issue) => ({
+        path: issue.path.length > 0 ? issue.path.join(".") : "(root)",
+        message: issue.message,
+    }))
+}
+
+// ── Build issues from any error (Zod or JSON parse) ─────────────────────────
+
+function collectValidationIssuesFromError(err: unknown): ValidationIssue[] {
+    if (err instanceof z.ZodError) {
+        return collectValidationIssues(err)
+    }
+
+    return [
+        {
+            path: "(root)",
+            message: `Failed to parse JSON: ${String(err)}`,
+        },
+    ]
+}
 
 // ── Extract JSON from agent response ────────────────────────────────────────
 
 function extractJson(text: string): string {
-  // Try markdown code block: ```json ... ``` or ``` ... ```
-  const blockMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-  if (blockMatch?.[1]) return blockMatch[1].trim();
+    // Try markdown code block: ```json ... ``` or ``` ... ```
+    const blockMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/)
+    if (blockMatch?.[1]) return blockMatch[1].trim()
 
-  // Try first { ... } or [ ... ] object/array in text
-  const objMatch = text.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
-  if (objMatch?.[1]) return objMatch[1].trim();
+    // Try first { ... } or [ ... ] object/array in text
+    const objMatch = text.match(/(\{[\s\S]*\}|\[[\s\S]*\])/)
+    if (objMatch?.[1]) return objMatch[1].trim()
 
-  // Fallback: return as-is (will likely fail JSON.parse, but clear error)
-  return text.trim();
+    // Fallback: return as-is (will likely fail JSON.parse, but clear error)
+    return text.trim()
 }
 
 // ── Invoke with schema validation ───────────────────────────────────────────
 
 export async function invokeWithSchema<T>(
-  prompt: string,
-  schema: z.ZodType<T>,
-  opts: { signal?: AbortSignal; session?: string; model?: string; thinking?: string },
+    prompt: string,
+    schema: z.ZodType<T>,
+    opts: { signal?: AbortSignal; session?: string; model?: string; thinking?: string },
 ): Promise<T> {
-  const maxRetries = 1;
-  const schemaDescription = schemaToPrompt(schema);
-  let currentPrompt = `${prompt}
+    const maxRetries = 1
+    const schemaDescription = schemaToPrompt(schema)
+    let currentPrompt = `${prompt}
 
-${schemaDescription}`;
+${schemaDescription}`
 
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const result = await invokeAgent(currentPrompt, opts);
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        const result = await invokeAgent(currentPrompt, opts)
 
-    console.log(`[weft]   agent stdout (${result.stdout.length} chars):`, result.stdout.slice(0, 500));
-    console.log(`[weft]   agent stderr:`, result.stderr || "(empty)");
-    console.log(`[weft]   agent exitCode:`, result.exitCode, `ok:`, result.ok);
+        console.log(`[weft]   agent stdout (${result.stdout.length} chars):`, result.stdout.slice(0, 500))
+        console.log(`[weft]   agent stderr:`, result.stderr || "(empty)")
+        console.log(`[weft]   agent exitCode:`, result.exitCode, `ok:`, result.ok)
 
-    try {
-      const jsonText = extractJson(result.stdout);
-      console.log(`[weft]   extracted JSON (${jsonText.length} chars):`, jsonText.slice(0, 300));
-      const parsed = JSON.parse(jsonText) as unknown;
-      return schema.parse(parsed);
-    } catch (err) {
-      if (attempt === maxRetries) throw err;
-      currentPrompt = `${prompt}\n\n${schemaDescription}\n\nPrevious response was invalid: ${String(err)}\nPlease fix and retry.`;
+        try {
+            const jsonText = extractJson(result.stdout)
+            console.log(`[weft]   extracted JSON (${jsonText.length} chars):`, jsonText.slice(0, 300))
+            const parsed = JSON.parse(jsonText) as unknown
+            return schema.parse(parsed)
+        } catch (err) {
+            if (attempt === maxRetries) {
+                const extractedResponse = extractJson(result.stdout)
+                throw new WeftSchemaValidationError({
+                    rawResponse: result.stdout,
+                    extractedResponse,
+                    validationIssues: collectValidationIssuesFromError(err),
+                    schemaDescription,
+                })
+            }
+            currentPrompt = `${prompt}\n\n${schemaDescription}\n\nPrevious response was invalid: ${String(err)}\nPlease fix and retry.`
+        }
     }
-  }
 
-  throw new Error("unreachable");
+    throw new Error("unreachable")
 }
 
 // ── Fallback — no schema ─────────────────────────────────────────────────────
 
 export async function invokeWithoutSchema(
-  prompt: string,
-  opts: { signal?: AbortSignal; session?: string; model?: string; thinking?: string },
+    prompt: string,
+    opts: { signal?: AbortSignal; session?: string; model?: string; thinking?: string },
 ): Promise<AgentResult> {
-  return invokeAgent(prompt, opts);
+    return invokeAgent(prompt, opts)
 }

@@ -100,6 +100,17 @@ export const meta = {
 
 Показать справку.
 
+### `weft --version` / `weft -v`
+
+Вывести версию пакета `@human-horizon/weft` из `package.json`.
+
+Работает из любой директории, не требует `.lore/weft/`.
+
+```bash
+weft --version
+# 0.3.2
+```
+
 ## Структура проекта
 
 Weft-проект хранит конфигурацию в `.lore/weft/`:

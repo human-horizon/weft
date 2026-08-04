@@ -42,6 +42,19 @@ const WEFT_PI_HOME = env.WEFT_PI_HOME || join(homedir(), ".ai", "weft", "pi");
 
 async function main() {
     const args = argv.slice(2);
+
+    if (args[0] === "--version" || args[0] === "-v") {
+        try {
+            const pkgPath = new URL("../package.json", import.meta.url);
+            const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { version: string };
+            console.log(pkg.version);
+        } catch (err) {
+            console.error(red(`❌ Failed to read package version: ${String(err)}`));
+            exit(1);
+        }
+        return;
+    }
+
     const command = args[0] || "interactive";
 
     switch (command) {
