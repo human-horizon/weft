@@ -278,8 +278,8 @@ describe("Zod schema to prompt", () => {
     const { schemaToPrompt } = await import("../src/schema-to-prompt.js");
     const schema = z.object({ name: z.string(), age: z.number() });
     const prompt = schemaToPrompt(schema);
-    expect(prompt).toContain("name: string");
-    expect(prompt).toContain("age: number");
+    expect(prompt).toContain('"name": string');
+    expect(prompt).toContain('"age": number');
     expect(prompt).toContain("VALID JSON");
   });
 
@@ -292,8 +292,8 @@ describe("Zod schema to prompt", () => {
       }),
     });
     const prompt = schemaToPrompt(schema);
-    expect(prompt).toContain("user:");
-    expect(prompt).toContain("tags: [string, ...]");
+    expect(prompt).toContain('"user":');
+    expect(prompt).toContain('"tags": [string]');
   });
 
   it("should describe enums", async () => {
@@ -312,6 +312,6 @@ describe("Zod schema to prompt", () => {
       email: z.string().optional(),
     });
     const prompt = schemaToPrompt(schema);
-    expect(prompt).toContain("email: string (optional)");
+    expect(prompt).toContain('"email": string (optional)');
   });
 });
