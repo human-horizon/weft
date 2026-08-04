@@ -11,5 +11,3 @@ export {
 } from "./types.js";
 
 export { weave } from "./builder.js";
-
-export { setAgentPath } from "./agent.js";
