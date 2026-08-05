@@ -4,14 +4,14 @@ import { join } from "node:path";
 import { readdirSync, existsSync, rmSync, readFileSync } from "node:fs";
 import type { AgentResult } from "./types.js";
 
-// ── Resolve pi from PATH ────────────────────────────────────────────────────
+// Resolve pi from PATH
 
 const agentPath = "pi";
 
 const WEFT_PI_HOME =
     process.env.WEFT_PI_HOME || join(homedir(), ".ai", "weft", "pi");
 
-// ── Session cleanup ─────────────────────────────────────────────────────────
+// Session cleanup
 
 /**
  * Remove all session files created by pi agent.
@@ -39,7 +39,7 @@ export function clearSessions(): void {
     }
 }
 
-// ── Model mapping from ~/.ai/settings.json ──────────────────────────────────
+// Model mapping from ~/.ai/settings.json
 
 interface PiSettings {
     modelMapping?: Record<string, string>;
@@ -85,7 +85,7 @@ export function resolveModel(tag: string): string {
     );
 }
 
-// ── Invoke agent via JSON mode (streaming events) ───────────────────────────
+// Invoke agent via JSON mode (streaming events)
 
 export async function invokeAgent(
     prompt: string,
@@ -130,7 +130,7 @@ function buildCliArgs(
     return args;
 }
 
-// ── JSON mode event parsing ────────────────────────────────────────────────
+// JSON mode event parsing
 
 interface JsonEvent {
     type: string;
@@ -147,18 +147,94 @@ interface JsonEvent {
     [key: string]: unknown;
 }
 
+// Accumulated state of a streaming run. Exported so tests can construct
+// and verify state transitions without spawning an actual process.
+export interface StreamState {
+    finalText: string;
+    streamedText: string;
+    streamedThinking: string;
+    stderr: string[];
+}
+
+// Pure event handler. Updates `state` in place.
+//
+// IMPORTANT: `message_end` and `text_end` MUST filter by
+// `event.message?.role === "assistant"` (or exclude `user`). The agent
+// streams BOTH user and assistant messages; an unfiltered handler would
+// overwrite the model's response with the user prompt (which is exactly
+// what was happening to sofia before round-3 fix).
+export function parseEvent(state: StreamState, event: JsonEvent): void {
+    // Thinking blocks
+
+    if (event.assistantMessageEvent?.type === "thinking_delta") {
+        const delta = event.assistantMessageEvent.delta;
+        if (delta) {
+            process.stderr.write(`\x1b[2m${delta}\x1b[0m`);
+            state.streamedThinking += delta;
+        }
+        return;
+    }
+
+    if (event.assistantMessageEvent?.type === "thinking_start") {
+        state.streamedThinking = "";
+        return;
+    }
+
+    if (event.assistantMessageEvent?.type === "thinking_end") {
+        process.stderr.write("\n");
+        return;
+    }
+
+    // Text blocks
+
+    if (event.assistantMessageEvent?.type === "text_delta") {
+        const delta = event.assistantMessageEvent.delta;
+        if (delta) {
+            process.stdout.write(delta);
+            state.streamedText += delta;
+        }
+        return;
+    }
+
+    if (event.assistantMessageEvent?.type === "text_start") {
+        return;
+    }
+
+    if (event.assistantMessageEvent?.type === "text_end") {
+        if (event.message?.role !== "user") {
+            const content = event.assistantMessageEvent.content;
+            if (content) state.finalText = content;
+        }
+        return;
+    }
+
+    // Message end - critical role filter here
+
+    if (event.type === "message_end" && event.message?.role === "assistant") {
+        const content = event.message.content;
+        if (Array.isArray(content)) {
+            const textParts = content
+                .filter((b) => b.type === "text" && b.text)
+                .map((b) => b.text);
+            if (textParts.length > 0) {
+                state.finalText = textParts.join("");
+            }
+        }
+    }
+}
+
 function invokeJsonMode(
     args: string[],
     signal?: AbortSignal,
 ): Promise<AgentResult> {
     return new Promise((resolve, reject) => {
         const start = performance.now();
-        const stderr: string[] = [];
-
-        // Track streaming state
-        let finalText = "";
-        let streamedText = "";
-        let streamedThinking = "";
+        const state: StreamState = {
+            finalText: "",
+            streamedText: "",
+            streamedThinking: "",
+            stderr: [],
+        };
 
         const child = spawn(agentPath, args, {
             stdio: ["ignore", "pipe", "pipe"],
@@ -171,7 +247,7 @@ function invokeJsonMode(
 
         let buffer = "";
 
-        // ── Parse JSON events from stdout ────────────────────────────────
+        // Parse JSON events from stdout
 
         child.stdout.on("data", (chunk: Buffer) => {
             buffer += chunk.toString("utf-8");
@@ -181,91 +257,25 @@ function invokeJsonMode(
 
             for (const line of lines) {
                 if (!line.trim()) continue;
-                processEvent(line);
+                let event: JsonEvent;
+                try {
+                    event = JSON.parse(line) as JsonEvent;
+                } catch {
+                    continue; // skip non-JSON lines
+                }
+                parseEvent(state, event);
             }
         });
 
-        // ── Forward stderr ───────────────────────────────────────────────
+        // Forward stderr
 
         child.stderr.on("data", (chunk: Buffer) => {
             const text = chunk.toString("utf-8");
-            stderr.push(text);
+            state.stderr.push(text);
             process.stderr.write(text);
         });
 
-        // ── Process a JSON event line ────────────────────────────────────
-
-        function processEvent(line: string) {
-            let event: JsonEvent;
-            try {
-                event = JSON.parse(line) as JsonEvent;
-            } catch {
-                return; // skip non-JSON lines
-            }
-
-            // ── Thinking blocks ──────────────────────────────────────────
-
-            if (event.assistantMessageEvent?.type === "thinking_delta") {
-                const delta = event.assistantMessageEvent.delta;
-                if (delta) {
-                    process.stderr.write(`\x1b[2m${delta}\x1b[0m`);
-                    streamedThinking += delta;
-                }
-                return;
-            }
-
-            if (event.assistantMessageEvent?.type === "thinking_start") {
-                // Thinking block started — clear for new thinking
-                streamedThinking = "";
-                return;
-            }
-
-            if (event.assistantMessageEvent?.type === "thinking_end") {
-                process.stderr.write("\n");
-                return;
-            }
-
-            // ── Text blocks ─────────────────────────────────────────────
-
-            if (event.assistantMessageEvent?.type === "text_delta") {
-                const delta = event.assistantMessageEvent.delta;
-                if (delta) {
-                    process.stdout.write(delta);
-                    streamedText += delta;
-                }
-                return;
-            }
-
-            if (event.assistantMessageEvent?.type === "text_start") {
-                // Text block started
-                return;
-            }
-
-            if (event.assistantMessageEvent?.type === "text_end") {
-                const content = event.assistantMessageEvent.content;
-                if (content) {
-                    finalText = content;
-                }
-                return;
-            }
-
-            // ── Message end — capture final content ─────────────────────
-
-            if (event.type === "message_end" && event.message) {
-                const content = event.message.content;
-                if (Array.isArray(content)) {
-                    const textParts = content
-                        .filter((b) => b.type === "text" && b.text)
-                        .map((b) => b.text);
-                    if (textParts.length > 0) {
-                        finalText = textParts.join("");
-                    }
-                }
-                return;
-            }
-        }
-
-        // ── Handle close ────────────────────────────────────────────────
+        // Handle close
 
         child.on("error", (err) => {
             reject(new Error(`Agent process error: ${err.message}`));
@@ -273,11 +283,11 @@ function invokeJsonMode(
 
         child.on("close", (code) => {
             const duration = performance.now() - start;
-            const stdout = finalText || streamedText;
+            const stdout = state.finalText || state.streamedText;
 
             resolve({
                 stdout,
-                stderr: stderr.join(""),
+                stderr: state.stderr.join(""),
                 exitCode: code ?? -1,
                 duration,
                 ok: code === 0,
