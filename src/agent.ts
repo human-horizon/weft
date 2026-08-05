@@ -163,7 +163,15 @@ export interface StreamState {
 // streams BOTH user and assistant messages; an unfiltered handler would
 // overwrite the model's response with the user prompt (which is exactly
 // what was happening to sofia before round-3 fix).
+//
+// Diagnostic: when env var WEFT_DEBUG_EVENTS is set to a non-empty value,
+// every event is dumped to stderr with a `[weft-evt] ` prefix so an
+// operator can inspect the raw JSON stream. Off by default.
 export function parseEvent(state: StreamState, event: JsonEvent): void {
+    if (process.env.WEFT_DEBUG_EVENTS) {
+        process.stderr.write(`[weft-evt] ${JSON.stringify(event)}\n`)
+    }
+
     // Thinking blocks
 
     if (event.assistantMessageEvent?.type === "thinking_delta") {

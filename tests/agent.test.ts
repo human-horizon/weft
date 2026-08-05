@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { parseEvent, type StreamState } from "../src/agent.js";
 
 function makeState(): StreamState {
@@ -105,5 +105,48 @@ describe("parseEvent - text_delta accumulates streamedText", () => {
             assistantMessageEvent: { type: "text_delta", delta: "world" },
         });
         expect(state.streamedText).toBe("hello world");
+    });
+});
+
+// Debug-mode tests: env-driven event dumping to stderr.
+
+describe("parseEvent - debug logging via WEFT_DEBUG_EVENTS", () => {
+    let stderrSpy: ReturnType<typeof vi.spyOn>;
+    const originalEnv = process.env.WEFT_DEBUG_EVENTS;
+
+    beforeEach(() => {
+        stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+        vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+        delete process.env.WEFT_DEBUG_EVENTS;
+    });
+
+    afterEach(() => {
+        if (originalEnv === undefined) {
+            delete process.env.WEFT_DEBUG_EVENTS;
+        } else {
+            process.env.WEFT_DEBUG_EVENTS = originalEnv;
+        }
+    });
+
+    it("does NOT write debug lines when env var is unset", () => {
+        const state = makeState();
+        parseEvent(state, message_end("assistant", "x"));
+        const calls = stderrSpy.mock.calls.map((c) => String(c[0]));
+        expect(calls.some((line) => line.startsWith("[weft-evt]"))).toBe(false);
+    });
+
+    it("writes a debug line per event when env var is set", () => {
+        process.env.WEFT_DEBUG_EVENTS = "1";
+        const state = makeState();
+        parseEvent(state, message_end("assistant", "hello"));
+        parseEvent(state, {
+            assistantMessageEvent: { type: "text_delta", delta: " world" },
+        });
+        const calls = stderrSpy.mock.calls.map((c) => String(c[0]));
+        const evtLines = calls.filter((line) => line.startsWith("[weft-evt]"));
+        expect(evtLines.length).toBe(2);
+        // first line should contain the serialised message_end
+        expect(evtLines[0]).toContain('"role":"assistant"');
+        expect(evtLines[0]).toContain('"type":"message_end"');
     });
 });
