@@ -110,9 +110,11 @@ function buildCliArgs(
 ): string[] {
     const args: string[] = ["--mode", "json"];
 
-    // Session: --session <name> if provided, else --no-session (stateless).
+    // Session: --session-id <name> creates a new session if missing.
+    // --session <name> only looks up existing sessions, which fails with
+    // "No session found matching '...'" for new sessions.
     if (opts.session) {
-        args.push("--session", opts.session);
+        args.push("--session-id", opts.session);
     } else {
         args.push("--no-session");
     }
