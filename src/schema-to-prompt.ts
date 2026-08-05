@@ -9,6 +9,7 @@ export function schemaToPrompt(schema: z.ZodType): string {
   const example = buildExample(schema);
   return [
     "Respond in valid JSON only. No markdown fences, no commentary.",
+    "Start your response directly with `{`. No preamble, no explanation, no schema repetition.",
     "Expected format:",
     shape,
     "",

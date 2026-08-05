@@ -112,14 +112,60 @@ function collectValidationIssuesFromError(err: unknown): ValidationIssue[] {
 
 // ── Extract JSON from agent response ────────────────────────────────────────
 
-function extractJson(text: string): string {
-    // Try markdown code block: ```json ... ``` or ``` ... ```
+// Find the first balanced {...} or [...] block in `text`.
+// Tracks strings (including escape characters) so braces inside strings
+// don't throw off the depth counter. Returns null if no balanced block
+// is found.
+function findBalancedJson(
+    text: string,
+    openChar: "{" | "[",
+    closeChar: "}" | "]",
+): { start: number; end: number } | null {
+    let depth = 0
+    let inString = false
+    let escape = false
+    let start = -1
+
+    for (let i = 0; i < text.length; i++) {
+        const ch = text[i]
+
+        if (escape) {
+            escape = false
+            continue
+        }
+        if (inString && ch === "\\") {
+            escape = true
+            continue
+        }
+        if (ch === '"') {
+            inString = !inString
+            continue
+        }
+        if (inString) continue
+
+        if (ch === openChar) {
+            if (depth === 0) start = i
+            depth++
+        } else if (ch === closeChar && depth > 0) {
+            depth--
+            if (depth === 0 && start >= 0) return { start, end: i + 1 }
+        }
+    }
+    return null
+}
+
+// Exported for unit testing.
+export function extractJson(text: string): string {
+    // Prefer explicit markdown code block: ```json ... ``` or ``` ... ```
     const blockMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/)
     if (blockMatch?.[1]) return blockMatch[1].trim()
 
-    // Try first { ... } or [ ... ] object/array in text
-    const objMatch = text.match(/(\{[\s\S]*\}|\[[\s\S]*\])/)
-    if (objMatch?.[1]) return objMatch[1].trim()
+    // Otherwise find the first balanced object or array
+    const obj = findBalancedJson(text, "{", "}")
+    if (obj) return text.slice(obj.start, obj.end).trim()
+
+    const arr = findBalancedJson(text, "[", "]")
+    if (arr) return text.slice(arr.start, arr.end).trim()
 
     // Fallback: return as-is (will likely fail JSON.parse, but clear error)
     return text.trim()
@@ -138,7 +184,11 @@ export function looksLikeSchemaEcho(text: string): boolean {
     return SCHEMA_ECHO_RE.test(text)
 }
 
-// ── Build retry hint with BAD/GOOD example when schema echo is detected ────
+// ── Build retry hint for schema echo ────────────────────────────────────
+//
+// Note: we deliberately do NOT include a literal "BAD" example, because
+// models sometimes copy the most prominent block in the prompt and echo
+// it back. Instead we emit a numbered list of strict format rules.
 
 function buildRetryHint(err: unknown, extractedJson: string): string {
     const base = `Previous response was invalid: ${String(err)}\nPlease fix and retry.`
@@ -147,15 +197,16 @@ function buildRetryHint(err: unknown, extractedJson: string): string {
     return [
         base,
         "",
-        "⚠ Your previous response looked like a schema description, not data.",
+        "⚠ Your previous response was a schema description, not data.",
         "",
-        "BAD (schema echo — do NOT return this):",
-        "{ title: string, content: string, keywords: [string, ...] }",
-        "",
-        "GOOD (actual JSON data — return THIS form):",
-        '{ "title": "...", "content": "...", "keywords": ["..."] }',
-        "",
-        "Return a JSON object with real values: strings in double quotes, numbers without quotes, arrays as [item1, item2], booleans as true/false.",
+        "Strict format rules for this retry:",
+        "1. Output ONLY a JSON object with real data values.",
+        "2. Strings are wrapped in DOUBLE QUOTES. Example: \"hello\"",
+        "3. Numbers are plain digits without quotes. Example: 42",
+        "4. Arrays use square brackets with comma-separated values.",
+        "5. Booleans are true or false (no quotes).",
+        "6. NEVER use the words `string`, `number`, `boolean`, `null` as values — they are types, not data.",
+        "7. Begin your response with the character `{` and end with `}`. No preamble, no commentary, no markdown.",
     ].join("\n")
 }
 

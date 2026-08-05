@@ -449,10 +449,11 @@ describe("Schema echo handling", () => {
     });
     expect(mockInvokeAgent).toHaveBeenCalledTimes(2);
 
-    // Second call (retry) must contain the BAD/GOOD hint
+    // Second call (retry) must contain the strict format rules hint
     const retryCall = mockInvokeAgent.mock.calls[1]?.[0] as string;
-    expect(retryCall).toContain("BAD (schema echo");
-    expect(retryCall).toContain("GOOD (actual JSON data");
+    expect(retryCall).toContain("Strict format rules");
+    expect(retryCall).not.toContain("BAD (schema echo");
+    expect(retryCall).toContain("Begin your response with the character");
   });
 
   it("should throw WeftSchemaValidationError with looksLikeSchemaEcho=true on final echo", async () => {
@@ -500,3 +501,33 @@ describe("Schema echo handling", () => {
     expect(err.message).not.toContain("Possible cause");
   });
 });
+
+// ── extractJson balanced-bracket tests ─────────────────────────────────────
+
+describe("extractJson", () => {
+  it("returns the first balanced object when multiple blocks are present", async () => {
+    const { extractJson } = await import("../src/zod-middleware.js");
+    const text =
+      'first: {"a": 1, "b": 2}\nsome trailing prose\nnotes: {"c": 3}'
+    expect(extractJson(text)).toBe('{"a": 1, "b": 2}')
+  })
+
+  it("handles escaped quotes inside strings", async () => {
+    const { extractJson } = await import("../src/zod-middleware.js");
+    const text = 'noise {"a": "say \\"hi\\"", "b": "} brace \\""} tail'
+    expect(extractJson(text)).toBe('{"a": "say \\"hi\\"", "b": "} brace \\""}')
+  })
+
+  it("returns the first balanced array when no object is present", async () => {
+    const { extractJson } = await import("../src/zod-middleware.js");
+    expect(extractJson("prefix [1, 2, 3] suffix")).toBe("[1, 2, 3]")
+  })
+
+  it("does not swallow text after the closing brace", async () => {
+    const { extractJson } = await import("../src/zod-middleware.js");
+    const text =
+      '{"title": "T", "content": "C", "keywords": ["k"]}\n\nSome explanation after.'
+    expect(extractJson(text)).toBe('{"title": "T", "content": "C", "keywords": ["k"]}')
+    expect(extractJson(text)).not.toContain("Some explanation after")
+  })
+})
