@@ -215,11 +215,6 @@ function cmdRun(runArgs: string[]) {
         exit(1);
     }
 
-    console.log(
-        `${dim("⚡ weft run")} ${cyan(filePath)} ${dim(extraArgs.join(" ") || "")}`,
-    );
-    console.log(`${dim(`  runtime: ${runtime}`)}`);
-
     if (dryRun) {
         console.log(dim(`  (dry run — not executing)`));
         return;

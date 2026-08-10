@@ -224,13 +224,8 @@ export async function invokeWithSchema<T>(
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
         const result = await invokeAgent(currentPrompt, opts)
 
-        console.log(`[weft]   agent stdout (${result.stdout.length} chars):`, result.stdout.slice(0, 500))
-        console.log(`[weft]   agent stderr:`, result.stderr || "(empty)")
-        console.log(`[weft]   agent exitCode:`, result.exitCode, `ok:`, result.ok)
-
         try {
             const jsonText = extractJson(result.stdout)
-            console.log(`[weft]   extracted JSON (${jsonText.length} chars):`, jsonText.slice(0, 300))
             const parsed = JSON.parse(jsonText) as unknown
             return schema.parse(parsed)
         } catch (err) {

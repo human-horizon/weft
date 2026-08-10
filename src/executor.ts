@@ -1,17 +1,7 @@
 import type { Pipeline, RunOpts, StepOpts } from "./types.js";
 import type { Step } from "./ir.js";
 import { invokeWithoutSchema, invokeWithSchema } from "./zod-middleware.js";
-import { clearSessions, resolveModel } from "./agent.js";
-
-// ── Colours ─────────────────────────────────────────────────────────────────
-
-const isColour = process.env.FORCE_COLOR || (process.env.TERM && process.env.TERM !== "dumb");
-const c = (code: string, text: string) => isColour ? `\x1b[${code}m${text}\x1b[0m` : text;
-const dim = (s: string) => c("2", s);
-const cyan = (s: string) => c("36", s);
-const green = (s: string) => c("32", s);
-const yellow = (s: string) => c("33", s);
-const bold = (s: string) => c("1", s);
+import { clearSessions } from "./agent.js";
 
 // ── Pipeline implementation ─────────────────────────────────────────────────
 
@@ -30,9 +20,6 @@ export class PipelineImpl<FinalCtx = Record<string, never>, InitialCtx = FinalCt
       this.dryRun();
       return ctx as unknown as FinalCtx;
     }
-
-    // Show pipeline tree before execution
-    this.showPipelineTree();
 
     let acc: Record<string, unknown> = ctx as Record<string, unknown>;
     try {
@@ -89,11 +76,6 @@ export class PipelineImpl<FinalCtx = Record<string, never>, InitialCtx = FinalCt
   ): Promise<Record<string, unknown>> {
     const prompt = step.fn(ctx);
 
-    console.log(`\n[weft] → prompt: "${step.name}"`);
-    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-    console.log(prompt);
-    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
-
     const result: unknown = await this.withRetry(step.opts, async () => {
       return this.withTimeout(step.opts.timeout, runOpts.signal, async (signal) => {
         if (step.opts.schema) {
@@ -108,14 +90,6 @@ export class PipelineImpl<FinalCtx = Record<string, never>, InitialCtx = FinalCt
       });
     });
 
-    console.log(`[weft] ← result: "${step.name}"`);
-    if (typeof result === 'object' && result !== null) {
-      console.log(JSON.stringify(result, null, 2));
-    } else {
-      console.log(String(result));
-    }
-    console.log();
-
     return { ...ctx, [step.name]: result };
   }
 
@@ -124,9 +98,7 @@ export class PipelineImpl<FinalCtx = Record<string, never>, InitialCtx = FinalCt
     ctx: Record<string, unknown>,
     _runOpts: RunOpts & { signal?: AbortSignal },
   ): Promise<Record<string, unknown>> {
-    console.log(`[weft] → step: "${step.name}"`);
     const result = await this.withRetry(step.opts ?? {}, () => step.fn(ctx));
-    console.log(`[weft] ← result: "${step.name}" =`, typeof result === 'object' ? JSON.stringify(result) : String(result));
     return { ...ctx, [step.name]: result };
   }
 
@@ -232,60 +204,6 @@ export class PipelineImpl<FinalCtx = Record<string, never>, InitialCtx = FinalCt
     }
   }
 
-  // ── Pipeline tree display ────────────────────────────────────────────────
-
-  private showPipelineTree(): void {
-    console.log(`\n${bold("⚡ Pipeline plan:")}`);
-    this.renderSteps(this.steps, "");
-    console.log();
-  }
-
-  private renderSteps(steps: Step[], prefix: string): void {
-    for (let i = 0; i < steps.length; i++) {
-      const step = steps[i]!;
-      const isLast = i === steps.length - 1;
-      const connector = isLast ? "└──" : "├──";
-      const childPrefix = isLast ? "    " : "│   ";
-
-      switch (step.kind) {
-        case "prompt":
-          this.renderPromptStep(step, prefix, connector, childPrefix);
-          break;
-        case "step":
-          console.log(`${prefix}${connector} ${yellow("⚡")} ${cyan(step.name)} ${dim("(step)")}`);
-          break;
-        case "when":
-          console.log(`${prefix}${connector} ${yellow("◇")} ${bold("when")}`);
-          this.renderSteps(step.then, prefix + childPrefix + "│   ");
-          if (step.else.length > 0) {
-            console.log(`${prefix}${childPrefix}${bold("else")}`);
-            this.renderSteps(step.else, prefix + childPrefix + "    ");
-          }
-          break;
-        case "parallel":
-          console.log(`${prefix}${connector} ${yellow("▤")} ${bold("parallel")} ${dim(Object.keys(step.tasks).join(", "))}`);
-          break;
-        case "use":
-          console.log(`${prefix}${connector} ${dim("⊞")} ${cyan("use")} ${dim("(embedded pipeline)")}`);
-          break;
-      }
-    }
-  }
-
-  private renderPromptStep(
-    step: Step & { kind: "prompt" },
-    prefix: string,
-    connector: string,
-    childPrefix: string,
-  ): void {
-    const modelTag = step.opts.model ?? "medium";
-    const modelName = resolveModel(modelTag);
-    const thinking = step.opts.thinking ? dim(`thinking: ${step.opts.thinking}`) : "";
-    const session = step.opts.session ? dim(`[${step.opts.session}]`) : "";
-
-    console.log(`${prefix}${connector} ${green("◆")} ${cyan(step.name)}`);
-    console.log(`${prefix}${childPrefix}${dim("model:")} ${modelTag} ${dim("→")} ${modelName} ${thinking} ${session}`);
-  }
 }
 
 // ── Type guard ────────────────────────────────────────────────────────────
