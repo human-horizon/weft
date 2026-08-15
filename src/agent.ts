@@ -11,6 +11,10 @@ const agentPath = "pi";
 const WEFT_PI_HOME =
     process.env.WEFT_PI_HOME || join(homedir(), ".ai", "weft", "pi");
 
+// Weft home directory (parent of the pi env). Holds the .env model mapping.
+const WEFT_HOME = join(homedir(), ".ai", "weft");
+const WEFT_ENV_PATH = join(WEFT_HOME, ".env");
+
 // Session cleanup
 
 /**
@@ -39,36 +43,53 @@ export function clearSessions(): void {
     }
 }
 
-// Model mapping from ~/.ai/settings.json
-
-interface PiSettings {
-    modelMapping?: Record<string, string>;
-}
+// Model mapping from ~/.ai/weft/.env
+//
+// The .env file maps model tags to full model names, one per line:
+//   simple=ollama-cloud/deepseek-v4-flash
+//   expert=openai-codex/gpt-5.5
+//
+// Lines starting with '#' are comments. Values may be wrapped in quotes.
+// The file is not committed (it lives in the weft home, outside any repo).
 
 let _modelMapping: Record<string, string> | null = null;
+
+function parseEnvFile(raw: string): Record<string, string> {
+    const result: Record<string, string> = {};
+    for (const line of raw.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const eq = trimmed.indexOf("=");
+        if (eq === -1) continue;
+        const key = trimmed.slice(0, eq).trim();
+        let value = trimmed.slice(eq + 1).trim();
+        // Strip surrounding quotes
+        if (
+            (value.startsWith('"') && value.endsWith('"')) ||
+            (value.startsWith("'") && value.endsWith("'"))
+        ) {
+            value = value.slice(1, -1);
+        }
+        if (key) result[key] = value;
+    }
+    return result;
+}
 
 function loadModelMapping(): Record<string, string> {
     if (_modelMapping) return _modelMapping;
 
-    const settingsPath = join(homedir(), ".ai", "settings.json");
     try {
-        const raw = readFileSync(settingsPath, "utf-8");
-        const settings = JSON.parse(raw) as PiSettings;
-        _modelMapping = settings.modelMapping ?? {};
+        const raw = readFileSync(WEFT_ENV_PATH, "utf-8");
+        _modelMapping = parseEnvFile(raw);
     } catch {
         _modelMapping = {};
     }
     return _modelMapping;
 }
 
-const VALID_TAGS = new Set([
-    "free", "cheap", "fastest", "fast",
-    "simple", "medium", "high", "xhigh", "expert", "ultra",
-]);
-
 /**
  * Resolve a model tag to a full model name.
- * Reads mapping from ~/.ai/settings.json.
+ * Reads mapping from ~/.ai/weft/.env (TAG=MODEL lines).
  * Throws if the tag is unknown and doesn't look like a full model name (contains '/').
  */
 export function resolveModel(tag: string): string {
@@ -79,9 +100,8 @@ export function resolveModel(tag: string): string {
     if (tag.includes("/")) return tag;
     throw new Error(
         `Unknown model tag: "${tag}". ` +
-        `Valid tags: ${[...VALID_TAGS].join(", ")}. ` +
-        `Or use a full model name like "provider/model-name".\n` +
-        `Model mapping is read from ~/.ai/settings.json (modelMapping field).`
+        `Define it in ${WEFT_ENV_PATH} as "${tag}=provider/model-name". ` +
+        `Or use a full model name like "provider/model-name".`
     );
 }
 
