@@ -11,9 +11,9 @@ const agentPath = "pi";
 const WEFT_PI_HOME =
     process.env.WEFT_PI_HOME || join(homedir(), ".ai", "weft", "pi");
 
-// Weft home directory (parent of the pi env). Holds the .env model mapping.
-const WEFT_HOME = join(homedir(), ".ai", "weft");
-const WEFT_ENV_PATH = join(WEFT_HOME, ".env");
+// Model mapping is read from the project's .lore/weft/.env file.
+// This file is per-project (not committed) and maps short tags to full model names.
+const WEFT_ENV_PATH = join(process.cwd(), ".lore", "weft", ".env");
 
 // Session cleanup
 
@@ -43,14 +43,14 @@ export function clearSessions(): void {
     }
 }
 
-// Model mapping from ~/.ai/weft/.env
+// Model mapping from {cwd}/.lore/weft/.env
 //
-// The .env file maps model tags to full model names, one per line:
+// The .env file is project-local and not committed. It maps model tags to full model
+// names, one per line:
 //   simple=ollama-cloud/deepseek-v4-flash
 //   expert=openai-codex/gpt-5.5
 //
 // Lines starting with '#' are comments. Values may be wrapped in quotes.
-// The file is not committed (it lives in the weft home, outside any repo).
 
 let _modelMapping: Record<string, string> | null = null;
 
@@ -100,7 +100,7 @@ export function resolveModel(tag: string): string {
     if (tag.includes("/")) return tag;
     throw new Error(
         `Unknown model tag: "${tag}". ` +
-        `Define it in ${WEFT_ENV_PATH} as "${tag}=provider/model-name". ` +
+        `Define it in .lore/weft/.env as "${tag}=provider/model-name". ` +
         `Or use a full model name like "provider/model-name".`
     );
 }

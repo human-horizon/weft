@@ -175,19 +175,19 @@ interface AgentResult {
 }
 ```
 
-**Model levels** (resolved from `~/.ai/weft/.env`):
+**Model levels** (resolved from `.lore/weft/.env`):
 
-Create a `.env` file in the weft home (`~/.ai/weft/.env`) mapping tags to models, one per line:
+Create a `.env` file in your project's weft folder (`.lore/weft/.env`) mapping tags to models, one per line:
 
 ```
-# ~/.ai/weft/.env
+# .lore/weft/.env
 simple=ollama-cloud/deepseek-v4-flash
 medium=ollama-cloud/deepseek-v4-flash
 high=openai-codex/gpt-5.4
 expert=openai-codex/gpt-5.5
 ```
 
-You can also use a full model name like `"ollama-cloud/deepseek-v4-flash"`. Unknown short tags throw an error.
+This file is project-local and should not be committed. Each pipeline/project defines its own tags.
 
 ---
 
