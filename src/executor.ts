@@ -1,7 +1,7 @@
 import type { Pipeline, RunOpts, StepOpts } from "./types.js";
 import type { Step } from "./ir.js";
 import { invokeWithoutSchema, invokeWithSchema } from "./zod-middleware.js";
-import { clearSessions, resolveModel } from "./agent.js";
+import { clearSessions } from "./agent.js";
 
 // ── Step status output ────────────────────────────────────────────────────
 
@@ -11,29 +11,48 @@ const green = (s: string) => c("32", s);
 const red = (s: string) => c("31", s);
 
 // ── Concurrent step status renderer ───────────────────────────────────────
+// Tracks in-flight steps by unique ID so parallel steps with identical labels
+// each get a correct duration. The single status line shows a count when
+// multiple instances of the same label are active.
+
+type InstanceId = number;
 
 class StepStatusRenderer {
-    private active = new Map<string, number>();
+    private starts = new Map<InstanceId, number>();
+    private labels = new Map<InstanceId, string>();
+    private counts = new Map<string, number>();
+    private nextId = 0;
     private interval: NodeJS.Timeout | null = null;
     private frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     private frameIndex = 0;
 
-    start(name: string): void {
-        this.active.set(name, performance.now());
+    start(label: string): InstanceId {
+        const id = this.nextId++;
+        this.starts.set(id, performance.now());
+        this.labels.set(id, label);
+        this.counts.set(label, (this.counts.get(label) ?? 0) + 1);
         this.ensureAnimation();
         this.render();
+        return id;
     }
 
-    finish(name: string, ok: boolean, error?: string): void {
-        const start = this.active.get(name) ?? performance.now();
-        this.active.delete(name);
+    finish(id: InstanceId, ok: boolean, error?: string): void {
+        const start = this.starts.get(id) ?? performance.now();
+        const label = this.labels.get(id) ?? "(unknown step)";
+        this.starts.delete(id);
+        this.labels.delete(id);
+
+        const remaining = (this.counts.get(label) ?? 1) - 1;
+        if (remaining > 0) this.counts.set(label, remaining);
+        else this.counts.delete(label);
+
         this.clearStatusLine();
         const duration = formatDuration(performance.now() - start);
         const icon = ok ? green("✓") : red("✗");
         const suffix = error ? `: ${error}` : "";
-        console.log(`[weft] ${icon} ${name} (${duration})${suffix}`);
+        console.log(`[weft] ${icon} ${label} (${duration})${suffix}`);
         this.render();
-        if (this.active.size === 0) this.stopAnimation();
+        if (this.starts.size === 0) this.stopAnimation();
     }
 
     private ensureAnimation(): void {
@@ -42,7 +61,7 @@ class StepStatusRenderer {
         this.interval = setInterval(() => {
             this.frameIndex = (this.frameIndex + 1) % this.frames.length;
             this.render();
-        }, 100);
+        }, 80);
     }
 
     private stopAnimation(): void {
@@ -52,8 +71,10 @@ class StepStatusRenderer {
     }
 
     private render(): void {
-        if (this.active.size === 0) return;
-        const names = Array.from(this.active.keys()).join(", ");
+        if (this.counts.size === 0) return;
+        const names = Array.from(this.counts.entries())
+            .map(([name, count]) => count > 1 ? `${name} (×${count})` : name)
+            .join(", ");
         process.stdout.write(`\r[weft] → ${names} ${this.frames[this.frameIndex]}`);
     }
 
@@ -63,14 +84,6 @@ class StepStatusRenderer {
 }
 
 const statusRenderer = new StepStatusRenderer();
-
-function tryResolveModel(tag: string): string | null {
-    try {
-        return resolveModel(tag);
-    } catch {
-        return null;
-    }
-}
 
 function stepLabel(step: Step): string {
     const userDescription = "opts" in step && step.opts ? step.opts.description : undefined;
@@ -125,6 +138,10 @@ export class PipelineImpl<FinalCtx = Record<string, never>, InitialCtx = FinalCt
             return ctx as unknown as FinalCtx;
         }
 
+        // Show an immediate spinner so users see feedback right away, even
+        // before the first step starts (e.g. during env loading or DB warmup).
+        const bootId = statusRenderer.start("starting pipeline");
+
         let acc: Record<string, unknown> = ctx as Record<string, unknown>;
         try {
             for (const step of this.steps) {
@@ -142,6 +159,7 @@ export class PipelineImpl<FinalCtx = Record<string, never>, InitialCtx = FinalCt
                 }
             }
         } finally {
+            statusRenderer.finish(bootId, true);
             clearSessions();
         }
 
@@ -156,13 +174,13 @@ export class PipelineImpl<FinalCtx = Record<string, never>, InitialCtx = FinalCt
         runOpts: RunOpts & { signal?: AbortSignal },
     ): Promise<Record<string, unknown>> {
         const name = requireStepLabel(step);
-        statusRenderer.start(name);
+        const id = statusRenderer.start(name);
         try {
             const result = await this.executeStepBody(step, ctx, runOpts);
-            statusRenderer.finish(name, true);
+            statusRenderer.finish(id, true);
             return result;
         } catch (err) {
-            statusRenderer.finish(name, false, (err as Error).message);
+            statusRenderer.finish(id, false, (err as Error).message);
             throw err;
         }
     }
