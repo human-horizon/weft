@@ -199,7 +199,6 @@ export function parseEvent(state: StreamState, event: JsonEvent): void {
     if (event.assistantMessageEvent?.type === "thinking_delta") {
         const delta = event.assistantMessageEvent.delta;
         if (delta) {
-            process.stderr.write(`\x1b[2m${delta}\x1b[0m`);
             state.streamedThinking += delta;
         }
         return;
@@ -211,7 +210,6 @@ export function parseEvent(state: StreamState, event: JsonEvent): void {
     }
 
     if (event.assistantMessageEvent?.type === "thinking_end") {
-        process.stderr.write("\n");
         return;
     }
 
@@ -220,7 +218,6 @@ export function parseEvent(state: StreamState, event: JsonEvent): void {
     if (event.assistantMessageEvent?.type === "text_delta") {
         const delta = event.assistantMessageEvent.delta;
         if (delta) {
-            process.stdout.write(delta);
             state.streamedText += delta;
         }
         return;
@@ -302,7 +299,6 @@ function invokeJsonMode(
         child.stderr.on("data", (chunk: Buffer) => {
             const text = chunk.toString("utf-8");
             state.stderr.push(text);
-            process.stderr.write(text);
         });
 
         // Handle close
