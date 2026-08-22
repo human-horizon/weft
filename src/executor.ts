@@ -1,7 +1,7 @@
 import type { Pipeline, RunOpts, StepOpts } from "./types.js";
 import type { Step } from "./ir.js";
 import { invokeWithoutSchema, invokeWithSchema } from "./zod-middleware.js";
-import { clearSessions } from "./agent.js";
+import { clearSessions, resolveModel } from "./agent.js";
 
 // ── Step status output ────────────────────────────────────────────────────
 
@@ -10,52 +10,96 @@ const c = (code: string, text: string) => isColour ? `\x1b[${code}m${text}\x1b[0
 const green = (s: string) => c("32", s);
 const red = (s: string) => c("31", s);
 
-// ── Spinner ───────────────────────────────────────────────────────────────
+// ── Concurrent step status renderer ───────────────────────────────────────
 
-class Spinner {
+class StepStatusRenderer {
+    private active = new Map<string, number>();
     private interval: NodeJS.Timeout | null = null;
     private frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     private frameIndex = 0;
-    private text = "";
 
-    start(text: string): void {
-        this.stop();
-        this.text = text;
+    start(name: string): void {
+        this.active.set(name, performance.now());
+        this.ensureAnimation();
+        this.render();
+    }
+
+    finish(name: string, ok: boolean, error?: string): void {
+        const start = this.active.get(name) ?? performance.now();
+        this.active.delete(name);
+        this.clearStatusLine();
+        const duration = formatDuration(performance.now() - start);
+        const icon = ok ? green("✓") : red("✗");
+        const suffix = error ? `: ${error}` : "";
+        console.log(`[weft] ${icon} ${name} (${duration})${suffix}`);
+        this.render();
+        if (this.active.size === 0) this.stopAnimation();
+    }
+
+    private ensureAnimation(): void {
+        if (this.interval) return;
         this.frameIndex = 0;
-        process.stdout.write(`${this.text} ${this.frames[0]}`);
         this.interval = setInterval(() => {
             this.frameIndex = (this.frameIndex + 1) % this.frames.length;
-            process.stdout.write(`\r${this.text} ${this.frames[this.frameIndex]}`);
-        }, 80);
+            this.render();
+        }, 100);
     }
 
-    stop(): void {
-        if (this.interval) {
-            clearInterval(this.interval);
-            this.interval = null;
-        }
+    private stopAnimation(): void {
+        if (!this.interval) return;
+        clearInterval(this.interval);
+        this.interval = null;
     }
 
-    clear(): void {
+    private render(): void {
+        if (this.active.size === 0) return;
+        const names = Array.from(this.active.keys()).join(", ");
+        process.stdout.write(`\r[weft] → ${names} ${this.frames[this.frameIndex]}`);
+    }
+
+    private clearStatusLine(): void {
         process.stdout.write("\r\x1b[K");
     }
 }
 
-const spinner = new Spinner();
+const statusRenderer = new StepStatusRenderer();
 
-function stepName(step: Step): string {
+function tryResolveModel(tag: string): string | null {
+    try {
+        return resolveModel(tag);
+    } catch {
+        return null;
+    }
+}
+
+function stepLabel(step: Step): string {
+    const userDescription = "opts" in step && step.opts ? step.opts.description : undefined;
+    if (userDescription) return userDescription;
+
     switch (step.kind) {
-        case "prompt":
-            return step.name;
+        case "prompt": {
+            const tag = step.opts.model ?? "medium";
+            return `${step.name} (prompt, ${tag})`;
+        }
         case "step":
-            return step.name;
+            return `${step.name} (js step)`;
         case "when":
-            return "when";
+            return "when (conditional branch)";
         case "parallel":
             return `parallel(${Object.keys(step.tasks).join(", ")})`;
         case "use":
-            return "use";
+            return "use (embedded pipeline)";
+        default:
+            return "";
     }
+}
+
+function requireStepLabel(step: Step): string {
+    const label = stepLabel(step);
+    if (!label) {
+        throw new Error(`Step has no status description. Add "description" to opts or use a supported step kind.`);
+    }
+    return label;
 }
 
 function formatDuration(ms: number): string {
@@ -111,22 +155,14 @@ export class PipelineImpl<FinalCtx = Record<string, never>, InitialCtx = FinalCt
         ctx: Record<string, unknown>,
         runOpts: RunOpts & { signal?: AbortSignal },
     ): Promise<Record<string, unknown>> {
-        const start = performance.now();
-        const name = stepName(step);
-        const startText = `[weft] → ${name}`;
-        spinner.start(startText);
+        const name = requireStepLabel(step);
+        statusRenderer.start(name);
         try {
             const result = await this.executeStepBody(step, ctx, runOpts);
-            const duration = formatDuration(performance.now() - start);
-            spinner.stop();
-            spinner.clear();
-            console.log(`[weft] ${green("✓")} ${name} (${duration})`);
+            statusRenderer.finish(name, true);
             return result;
         } catch (err) {
-            const duration = formatDuration(performance.now() - start);
-            spinner.stop();
-            spinner.clear();
-            console.log(`[weft] ${red("✗")} ${name} (${duration}): ${(err as Error).message}`);
+            statusRenderer.finish(name, false, (err as Error).message);
             throw err;
         }
     }

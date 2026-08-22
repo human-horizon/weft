@@ -11,6 +11,7 @@ export interface AgentResult {
 // ── Step options ────────────────────────────────────────────────────────────
 
 export interface StepOpts {
+  description?: string;
   retry?: number;
   retryDelay?: number;
   retryBackoff?: "constant" | "linear" | "exponential";
