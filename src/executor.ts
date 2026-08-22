@@ -10,6 +10,39 @@ const c = (code: string, text: string) => isColour ? `\x1b[${code}m${text}\x1b[0
 const green = (s: string) => c("32", s);
 const red = (s: string) => c("31", s);
 
+// ── Spinner ───────────────────────────────────────────────────────────────
+
+class Spinner {
+    private interval: NodeJS.Timeout | null = null;
+    private frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    private frameIndex = 0;
+    private text = "";
+
+    start(text: string): void {
+        this.stop();
+        this.text = text;
+        this.frameIndex = 0;
+        process.stdout.write(`${this.text} ${this.frames[0]}`);
+        this.interval = setInterval(() => {
+            this.frameIndex = (this.frameIndex + 1) % this.frames.length;
+            process.stdout.write(`\r${this.text} ${this.frames[this.frameIndex]}`);
+        }, 80);
+    }
+
+    stop(): void {
+        if (this.interval) {
+            clearInterval(this.interval);
+            this.interval = null;
+        }
+    }
+
+    clear(): void {
+        process.stdout.write("\r\x1b[K");
+    }
+}
+
+const spinner = new Spinner();
+
 function stepName(step: Step): string {
     switch (step.kind) {
         case "prompt":
@@ -80,13 +113,20 @@ export class PipelineImpl<FinalCtx = Record<string, never>, InitialCtx = FinalCt
     ): Promise<Record<string, unknown>> {
         const start = performance.now();
         const name = stepName(step);
-        console.log(`[weft] → ${name}`);
+        const startText = `[weft] → ${name}`;
+        spinner.start(startText);
         try {
             const result = await this.executeStepBody(step, ctx, runOpts);
-            console.log(`[weft] ${green("✓")} ${name} (${formatDuration(performance.now() - start)})`);
+            const duration = formatDuration(performance.now() - start);
+            spinner.stop();
+            spinner.clear();
+            console.log(`[weft] ${green("✓")} ${name} (${duration})`);
             return result;
         } catch (err) {
-            console.log(`[weft] ${red("✗")} ${name} (${formatDuration(performance.now() - start)}): ${(err as Error).message}`);
+            const duration = formatDuration(performance.now() - start);
+            spinner.stop();
+            spinner.clear();
+            console.log(`[weft] ${red("✗")} ${name} (${duration}): ${(err as Error).message}`);
             throw err;
         }
     }

@@ -3,6 +3,7 @@
 import { spawn, execSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, dirname, basename, extname, relative, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { env, argv, exit, cwd, stdin, stdout } from "node:process";
 import { createInterface } from "node:readline";
@@ -473,7 +474,10 @@ function cmdUpdate(updateArgs: string[]) {
 
     if (updateGlobal) {
         console.log(dim(`\n🌐 Updating global weft CLI...`));
-        const updated = tryGlobalUpdate("pnpm") || tryGlobalUpdate("npm");
+        const manager = detectGlobalPackageManager();
+        const updated = manager
+            ? updateGlobalWeft(manager)
+            : updateGlobalWeft("pnpm") || updateGlobalWeft("npm");
         if (!updated) {
             console.error(red(`❌ Failed to update global weft CLI`));
             console.error(dim(`  Try manually: pnpm add -g @human-horizon/weft@latest`));
@@ -483,7 +487,37 @@ function cmdUpdate(updateArgs: string[]) {
     }
 }
 
-function tryGlobalUpdate(packageManager: "pnpm" | "npm"): boolean {
+function getGlobalRoot(packageManager: "pnpm" | "npm"): string | null {
+    try {
+        const command = packageManager === "pnpm" ? "pnpm root -g" : "npm root -g";
+        return execSync(command, { stdio: ["ignore", "pipe", "ignore"] }).toString().trim();
+    } catch {
+        return null;
+    }
+}
+
+function detectGlobalPackageManager(): "pnpm" | "npm" | null {
+    // Path of the currently running weft CLI (dist/cli.js)
+    const currentPath = fileURLToPath(import.meta.url);
+
+    const pnpmRoot = getGlobalRoot("pnpm");
+    if (pnpmRoot && currentPath.startsWith(pnpmRoot)) {
+        return "pnpm";
+    }
+
+    const npmRoot = getGlobalRoot("npm");
+    if (npmRoot && currentPath.startsWith(npmRoot)) {
+        return "npm";
+    }
+
+    // Heuristic fallback for npx or unusual installs
+    if (currentPath.includes("pnpm")) return "pnpm";
+    if (currentPath.includes("npm") || currentPath.includes("_npx")) return "npm";
+
+    return null;
+}
+
+function updateGlobalWeft(packageManager: "pnpm" | "npm"): boolean {
     try {
         const command = packageManager === "pnpm"
             ? "pnpm add -g @human-horizon/weft@latest"
