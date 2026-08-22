@@ -67,6 +67,8 @@ async function main() {
             return cmdInit(args[1]);
         case "install":
             return cmdInstall();
+        case "update":
+            return cmdUpdate(args.slice(1));
         case "interactive":
             return cmdInteractive();
         case "help":
@@ -91,6 +93,7 @@ ${bold("Usage:")}
   weft ${green("list")} ${dim("[dir]")}              List pipelines
   weft ${green("init")} ${dim("<name>")}             Create a new pipeline
   weft ${green("install")}                          Setup project: .lore/weft/ + pnpm install
+  weft ${green("update")} ${dim("[--global|--local]")}  Update weft to latest version
   weft ${green("help")} ${dim("[command]")}           Show help
 
 ${bold("Interactive:")}
@@ -102,6 +105,7 @@ ${bold("Examples:")}
   weft list
   weft init my-pipeline
   weft install
+  weft update
 
 ${dim("Environment:")}
   WEFT_PIPELINES_DIR    Pipeline directory (default: .lore/weft/pipelines)
@@ -150,6 +154,23 @@ Setup weft in the current project:
 
 ${bold("Examples:")}
   cd my-project && weft install
+`,
+    update: `
+${bold("weft update")} ${dim("[--global|--local]")}
+
+Update weft to the latest published version.
+
+By default, updates both the local project dependency in ${dim(".lore/weft/")}
+and the global CLI installation. Use flags to update only one side.
+
+${bold("Flags:")}
+  ${dim("--global")}    Update only the global weft CLI
+  ${dim("--local")}     Update only the local ${dim(".lore/weft/")} dependency
+
+${bold("Examples:")}
+  weft update
+  weft update --local
+  weft update --global
 `,
 };
 
@@ -412,6 +433,65 @@ function cmdInstall() {
     } catch {
         console.error(red(`\n❌ pnpm install failed`));
         exit(1);
+    }
+}
+
+// ── Update command ─────────────────────────────────────────────────────────
+
+function cmdUpdate(updateArgs: string[]) {
+    if (updateArgs[0] === "--help" || updateArgs[0] === "-h") {
+        console.log(HELP.update);
+        return;
+    }
+
+    const globalOnly = updateArgs.includes("--global");
+    const localOnly = updateArgs.includes("--local");
+    const updateGlobal = !localOnly;
+    const updateLocal = !globalOnly;
+
+    const projectDir = cwd();
+    const loreDir = resolve(projectDir, ".lore", "weft");
+    const lorePkgPath = resolve(loreDir, "package.json");
+    const hasLocal = existsSync(lorePkgPath);
+
+    if (updateLocal && hasLocal) {
+        console.log(dim(`📦 Updating local weft in .lore/weft/...`));
+        try {
+            execSync("pnpm install @human-horizon/weft@latest --config.minimum-release-age=0", {
+                stdio: "inherit",
+                cwd: loreDir,
+            });
+            console.log(green(`✓ Local weft updated in ${relative(projectDir, loreDir)}/`));
+        } catch {
+            console.error(red(`❌ Failed to update local weft in ${relative(projectDir, loreDir)}/`));
+            if (!updateGlobal) exit(1);
+        }
+    } else if (updateLocal && !hasLocal) {
+        console.log(yellow(`⚠  No .lore/weft/ found in ${projectDir}`));
+        console.log(dim(`  Run weft install first, or use --global.`));
+    }
+
+    if (updateGlobal) {
+        console.log(dim(`\n🌐 Updating global weft CLI...`));
+        const updated = tryGlobalUpdate("pnpm") || tryGlobalUpdate("npm");
+        if (!updated) {
+            console.error(red(`❌ Failed to update global weft CLI`));
+            console.error(dim(`  Try manually: pnpm add -g @human-horizon/weft@latest`));
+            exit(1);
+        }
+        console.log(green(`✓ Global weft CLI updated`));
+    }
+}
+
+function tryGlobalUpdate(packageManager: "pnpm" | "npm"): boolean {
+    try {
+        const command = packageManager === "pnpm"
+            ? "pnpm add -g @human-horizon/weft@latest"
+            : "npm install -g @human-horizon/weft@latest";
+        execSync(command, { stdio: "inherit" });
+        return true;
+    } catch {
+        return false;
     }
 }
 
