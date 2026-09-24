@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { readdirSync, existsSync, rmSync, readFileSync } from "node:fs";
 import type { AgentResult } from "./types.js";
+import { debugLog, debugEnabled } from "./debug.js";
 
 // Resolve pi from PATH
 
@@ -159,6 +160,8 @@ interface JsonEvent {
     message?: {
         role: string;
         content: Array<{ type: string; text?: string; thinking?: string }>;
+        stopReason?: string;
+        errorMessage?: string;
     };
     assistantMessageEvent?: {
         type: string;
@@ -250,10 +253,52 @@ export function parseEvent(state: StreamState, event: JsonEvent): void {
     }
 }
 
+// ── Debug mode: stream reasoning + text deltas to stderr ─────────────────────
+//
+// Activated by setting WEFT_DEBUG_THINKING=1 (e.g. via the `--debug` CLI flag
+// in cli.ts which exports WEFT_DEBUG_THINKING to the spawned pipeline child).
+// Writes each chunk directly to stderr so the operator can watch the model
+// think / answer in real time.
+
+function writeThinkingToStderr(event: JsonEvent): void {
+    const evt = event.assistantMessageEvent;
+    if (!evt) return;
+
+    if (evt.type === "thinking_delta") {
+        if (evt.delta) process.stderr.write(`[weft:thinking] ${evt.delta}`);
+        return;
+    }
+
+    if (evt.type === "thinking_start") {
+        process.stderr.write("[weft:thinking] (start)\n");
+        return;
+    }
+
+    if (evt.type === "thinking_end") {
+        process.stderr.write("\n[weft:thinking] (end)\n");
+        return;
+    }
+
+    if (evt.type === "text_delta") {
+        if (evt.delta) process.stderr.write(`[weft:text] ${evt.delta}`);
+        return;
+    }
+
+    if (evt.type === "text_start") {
+        process.stderr.write("[weft:text] (start)\n");
+        return;
+    }
+
+    if (evt.type === "text_end") {
+        process.stderr.write("\n[weft:text] (end)\n");
+    }
+}
+
 function invokeJsonMode(
     args: string[],
     signal?: AbortSignal,
 ): Promise<AgentResult> {
+    const debugThinking = debugEnabled();
     return new Promise((resolve, reject) => {
         const start = performance.now();
         const state: StreamState = {
@@ -262,6 +307,16 @@ function invokeJsonMode(
             streamedThinking: "",
             stderr: [],
         };
+
+        debugLog(`agent spawn`, {
+            agentPath,
+            argsCount: args.length,
+            promptArgIndex: args.indexOf("-p"),
+            promptLen: args.indexOf("-p") >= 0 ? (args[args.indexOf("-p") + 1]?.length ?? 0) : 0,
+            session: args.includes("--session-id") ? args[args.indexOf("--session-id") + 1] : "(none)",
+            model: args.includes("--model") ? args[args.indexOf("--model") + 1] : "(default)",
+            debugThinking,
+        });
 
         const child = spawn(agentPath, args, {
             stdio: ["ignore", "pipe", "pipe"],
@@ -272,12 +327,37 @@ function invokeJsonMode(
             },
         });
 
+        debugLog(`agent child spawned`, { pid: child.pid });
+
         let buffer = "";
+        // Cap the raw-stdout fallback buffer so a huge model response (or a
+        // runaway agent) can't grow an unbounded string and crash with
+        // "RangeError: Invalid string length". Only the tail is kept; it is
+        // used solely as a debugging fallback when no model text is extracted.
+        const MAX_RAW_STDOUT = 1024 * 1024; // 1 MiB
+        let rawStdout = "";
+        let firstChunkAt: number | null = null;
+        let lastMessageEnd: { stopReason?: string; errorMessage?: string } | null = null;
+        let agentError: string | null = null;
 
         // Parse JSON events from stdout
 
         child.stdout.on("data", (chunk: Buffer) => {
-            buffer += chunk.toString("utf-8");
+            const text = chunk.toString("utf-8");
+            if (firstChunkAt === null) {
+                firstChunkAt = performance.now();
+                debugLog(`agent first stdout chunk`, {
+                    msFromSpawn: Math.round(firstChunkAt - start),
+                    chunkBytes: chunk.length,
+                    preview: text.slice(0, 80).replace(/\n/g, "\\n"),
+                });
+            }
+            rawStdout += text;
+            if (rawStdout.length > MAX_RAW_STDOUT) {
+                rawStdout = rawStdout.slice(-MAX_RAW_STDOUT);
+            }
+
+            buffer += text;
 
             const lines = buffer.split("\n");
             buffer = lines.pop() ?? "";
@@ -288,7 +368,31 @@ function invokeJsonMode(
                 try {
                     event = JSON.parse(line) as JsonEvent;
                 } catch {
+                    debugLog(`agent non-JSON line`, { line: line.slice(0, 120) });
                     continue; // skip non-JSON lines
+                }
+                if (debugThinking) {
+                    writeThinkingToStderr(event);
+                }
+                if (event.type === "message_start" && event.message) {
+                    debugLog(`agent message_start`, { role: event.message.role });
+                }
+                if (event.type === "message_end" && event.message) {
+                    lastMessageEnd = {
+                        stopReason: event.message.stopReason as string | undefined,
+                        errorMessage: event.message.errorMessage as string | undefined,
+                    };
+                    // Capture provider/model errors (e.g. timeout) so callers
+                    // can surface a clear message instead of a raw JSON dump.
+                    if (lastMessageEnd.stopReason === "error" && lastMessageEnd.errorMessage) {
+                        agentError = lastMessageEnd.errorMessage;
+                    }
+                    debugLog(`agent message_end`, {
+                        role: event.message.role,
+                        stopReason: lastMessageEnd.stopReason,
+                        errorMessage: lastMessageEnd.errorMessage,
+                        contentBlocks: Array.isArray(event.message.content) ? event.message.content.length : 0,
+                    });
                 }
                 parseEvent(state, event);
             }
@@ -304,19 +408,42 @@ function invokeJsonMode(
         // Handle close
 
         child.on("error", (err) => {
+            debugLog(`agent child error`, { error: err.message });
             reject(new Error(`Agent process error: ${err.message}`));
         });
 
         child.on("close", (code) => {
             const duration = performance.now() - start;
-            const stdout = state.finalText || state.streamedText;
+            let stdout = state.finalText || state.streamedText;
+
+            // Fallback: if no model text was extracted (timeout, error, empty
+            // content), expose the raw stdout so the operator can see what
+            // the agent actually emitted instead of an empty string.
+            if (!stdout && rawStdout.trim()) {
+                stdout = rawStdout;
+            }
+
+            debugLog(`agent child closed`, {
+                exitCode: code,
+                durationMs: Math.round(duration),
+                rawStdoutChars: rawStdout.length,
+                extractedStdoutChars: stdout.length,
+                stderrChars: state.stderr.length,
+                thinkingChars: state.streamedThinking.length,
+                streamedTextChars: state.streamedText.length,
+                stopReason: lastMessageEnd?.stopReason,
+                errorMessage: lastMessageEnd?.errorMessage,
+                agentError,
+            });
 
             resolve({
                 stdout,
                 stderr: state.stderr.join(""),
+                thinking: state.streamedThinking,
                 exitCode: code ?? -1,
                 duration,
                 ok: code === 0,
+                error: agentError ?? undefined,
             });
         });
     });

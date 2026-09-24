@@ -8,6 +8,7 @@ import { createRequire } from "node:module";
 import { env, argv, exit, cwd, stdin, stdout } from "node:process";
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
+import { debugLog } from "./debug.js";
 
 const require = createRequire(import.meta.url);
 
@@ -56,11 +57,30 @@ async function main() {
         return;
     }
 
+    // Extract global --debug / -d before command dispatch so it works
+    // with `weft -d`, `weft run ... -d`, and interactive mode.
+    let debug = false;
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] === "--debug" || args[i] === "-d") {
+            debug = true;
+            args.splice(i, 1);
+            i--;
+        }
+    }
+
+    // Enable debug logging in the parent (weft CLI) process too, so file
+    // resolution, runtime detection, and spawn details show up in stderr.
+    if (debug || process.env.WEFT_DEBUG_THINKING) {
+        process.env.WEFT_DEBUG_THINKING = "1";
+    }
+
+    debugLog(`weft CLI started`, { command: args[0] ?? "interactive", args, debug });
+
     const command = args[0] || "interactive";
 
     switch (command) {
         case "run":
-            return cmdRun(args.slice(1));
+            return cmdRun(args.slice(1), debug);
         case "list":
         case "ls":
             return cmdList(args[1]);
@@ -71,7 +91,7 @@ async function main() {
         case "update":
             return cmdUpdate(args.slice(1));
         case "interactive":
-            return cmdInteractive();
+            return cmdInteractive(debug);
         case "help":
         case "--help":
         case "-h":
@@ -107,6 +127,10 @@ ${bold("Examples:")}
   weft init my-pipeline
   weft install
   weft update
+  weft -d run generate-specs.ts           ${dim("# stream model reasoning to stderr")}
+
+${bold("Global flags:")}
+  ${dim("--debug, -d")}    Stream model reasoning + text tokens to stderr (works with any command)
 
 ${dim("Environment:")}
   WEFT_PIPELINES_DIR    Pipeline directory (default: .lore/weft/pipelines)
@@ -123,11 +147,13 @@ ${bold("Arguments:")}
 
 ${bold("Flags:")}
   ${dim("--dry-run")}    Show what would run without executing
+  ${dim("--debug, -d")}    Stream model reasoning + text tokens to stderr
 
 ${bold("Examples:")}
   weft run pipeline.ts "topic"
   weft run ИсправьСтатью.ts ./article.json
   weft run ./.lore/weft/pipelines/НапишиСтатью.ts "Тревога" --dry-run
+  weft run generate-specs.ts --debug
 `,
     list: `
 ${bold("weft list")} ${dim("[dir]")}
@@ -185,7 +211,7 @@ function cmdHelp(topic?: keyof typeof HELP) {
     console.log(HELP.main);
 }
 
-function cmdRun(runArgs: string[]) {
+function cmdRun(runArgs: string[], debug: boolean) {
     const fileArg = runArgs[0];
     if (!fileArg || fileArg === "--help" || fileArg === "-h") {
         console.log(HELP.run);
@@ -227,6 +253,16 @@ function cmdRun(runArgs: string[]) {
         extraArgs.splice(extraArgs.indexOf("--dry-run"), 1);
     }
 
+    // Note: --debug / -d may already have been stripped by main() when used
+    // globally; strip them here too for the `weft run ... -d` form.
+    for (let i = 0; i < extraArgs.length; i++) {
+        if (extraArgs[i] === "--debug" || extraArgs[i] === "-d") {
+            debug = true;
+            extraArgs.splice(i, 1);
+            i--;
+        }
+    }
+
     const runtime = detectRuntime(filePath);
     if (!runtime) {
         console.error(
@@ -242,17 +278,29 @@ function cmdRun(runArgs: string[]) {
         return;
     }
 
+    debugLog(`spawning pipeline child (cmdRun)`, {
+        runtime,
+        filePath,
+        extraArgs,
+        envKeys: ["WEFT_PI_PATH", "PI_CODING_AGENT_DIR", ...(debug ? ["WEFT_DEBUG_THINKING"] : [])],
+    });
+
     const child = spawn(runtime, [filePath, ...extraArgs], {
         stdio: "inherit",
         env: {
             ...env,
             WEFT_PI_PATH: piPath,
             PI_CODING_AGENT_DIR: WEFT_PI_HOME,
+            ...((debug || process.env.WEFT_DEBUG_THINKING) ? { WEFT_DEBUG_THINKING: "1" } : {}),
         },
     });
 
-    child.on("exit", (code) => exit(code ?? 0));
+    child.on("exit", (code) => {
+        debugLog(`pipeline child exited (cmdRun)`, { exitCode: code });
+        exit(code ?? 0);
+    });
     child.on("error", (err) => {
+        debugLog(`pipeline child failed to start (cmdRun)`, { error: err.message });
         console.error(red(`❌ Failed to start: ${err.message}`));
         exit(1);
     });
@@ -543,7 +591,7 @@ interface PipelineMeta {
     args?: ArgMeta[];
 }
 
-async function cmdInteractive() {
+async function cmdInteractive(debug: boolean) {
     const dir = resolve(cwd(), PIPELINES_DIR);
 
     if (!existsSync(dir)) {
@@ -625,17 +673,29 @@ async function cmdInteractive() {
         exit(1);
     }
 
+    debugLog(`spawning pipeline child (interactive)`, {
+        runtime,
+        filePath,
+        collectedArgs,
+        envKeys: ["WEFT_PI_PATH", "PI_CODING_AGENT_DIR", ...(debug ? ["WEFT_DEBUG_THINKING"] : [])],
+    });
+
     const child = spawn(runtime, [filePath, ...collectedArgs], {
         stdio: "inherit",
         env: {
             ...env,
             WEFT_PI_PATH: piPath,
             PI_CODING_AGENT_DIR: WEFT_PI_HOME,
+            ...((debug || process.env.WEFT_DEBUG_THINKING) ? { WEFT_DEBUG_THINKING: "1" } : {}),
         },
     });
 
-    child.on("exit", (code) => exit(code ?? 0));
+    child.on("exit", (code) => {
+        debugLog(`pipeline child exited (interactive)`, { exitCode: code });
+        exit(code ?? 0);
+    });
     child.on("error", (err) => {
+        debugLog(`pipeline child failed to start (interactive)`, { error: err.message });
         console.error(red(`❌ Failed to start: ${err.message}`));
         exit(1);
     });

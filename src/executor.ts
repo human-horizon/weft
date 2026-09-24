@@ -2,6 +2,7 @@ import type { Pipeline, RunOpts, StepOpts } from "./types.js";
 import type { Step } from "./ir.js";
 import { invokeWithoutSchema, invokeWithSchema } from "./zod-middleware.js";
 import { clearSessions } from "./agent.js";
+import { debugLog } from "./debug.js";
 
 // ── Step status output ────────────────────────────────────────────────────
 
@@ -133,6 +134,13 @@ export class PipelineImpl<FinalCtx = Record<string, never>, InitialCtx = FinalCt
         const signal = opts?.signal;
         const failFast = opts?.failFast ?? true;
 
+        debugLog(`pipeline.run started`, {
+            totalSteps: this.steps.length,
+            ctxKeys: Object.keys(ctx as Record<string, unknown>),
+            dryRun: opts?.dryRun ?? false,
+            failFast,
+        });
+
         if (opts?.dryRun) {
             this.dryRun();
             return ctx as unknown as FinalCtx;
@@ -144,15 +152,21 @@ export class PipelineImpl<FinalCtx = Record<string, never>, InitialCtx = FinalCt
 
         let acc: Record<string, unknown> = ctx as Record<string, unknown>;
         try {
-            for (const step of this.steps) {
+            for (let i = 0; i < this.steps.length; i++) {
+                const step = this.steps[i];
+                debugLog(`pipeline step dispatching`, {
+                    index: `${i + 1}/${this.steps.length}`,
+                    kind: step?.kind,
+                    name: step && "name" in step ? step.name : "(branch)",
+                });
                 if (signal?.aborted) throw new Error("Aborted");
 
-                const canContinue = isContinuingStep(step) && (step.opts.continueOnError ?? false);
+                const canContinue = step && isContinuingStep(step) && (step.opts.continueOnError ?? false);
                 if (!canContinue && failFast) {
-                    acc = await this.executeStep(step, acc, { ...opts, signal });
+                    acc = await this.executeStep(step!, acc, { ...opts, signal });
                 } else {
                     try {
-                        acc = await this.executeStep(step, acc, { ...opts, signal });
+                        acc = await this.executeStep(step!, acc, { ...opts, signal });
                     } catch (err) {
                         console.error(`[weft] step error (continuing):`, err);
                     }
@@ -217,6 +231,16 @@ export class PipelineImpl<FinalCtx = Record<string, never>, InitialCtx = FinalCt
         runOpts: RunOpts & { signal?: AbortSignal },
     ): Promise<Record<string, unknown>> {
         const prompt = step.fn(ctx);
+        debugLog(`prompt step: prompt built`, {
+            name: step.name,
+            model: step.opts.model ?? "medium",
+            session: step.opts.session,
+            promptLen: prompt.length,
+            promptPreview: prompt.slice(0, 120).replace(/\n/g, "\\n"),
+            hasSchema: !!step.opts.schema,
+            timeout: step.opts.timeout,
+            retry: step.opts.retry ?? 0,
+        });
 
         const result: unknown = await this.withRetry(step.opts, async () => {
             return this.withTimeout(step.opts.timeout, runOpts.signal, async (signal) => {
@@ -230,6 +254,12 @@ export class PipelineImpl<FinalCtx = Record<string, never>, InitialCtx = FinalCt
                 }
                 return invokeWithoutSchema(prompt, { signal, session: step.opts.session, model: step.opts.model, thinking: step.opts.thinking });
             });
+        });
+
+        debugLog(`prompt step: result received`, {
+            name: step.name,
+            resultType: typeof result,
+            resultSize: typeof result === "string" ? result.length : JSON.stringify(result).length,
         });
 
         return { ...ctx, [step.name]: result };
@@ -292,7 +322,18 @@ export class PipelineImpl<FinalCtx = Record<string, never>, InitialCtx = FinalCt
             try {
                 return await fn();
             } catch (err) {
-                if (attempt === max) throw err;
+                if (attempt === max) {
+                    debugLog(`withRetry: final failure`, {
+                        attempt: `${attempt + 1}/${max + 1}`,
+                        error: (err as Error).message,
+                    });
+                    throw err;
+                }
+                debugLog(`withRetry: retrying`, {
+                    attempt: `${attempt + 1}/${max + 1}`,
+                    delayMs: delay,
+                    error: (err as Error).message,
+                });
                 await sleep(delay);
                 if (opts.retryBackoff === "exponential") delay *= 2;
                 else if (opts.retryBackoff === "linear") delay += opts.retryDelay ?? 1000;
@@ -309,8 +350,12 @@ export class PipelineImpl<FinalCtx = Record<string, never>, InitialCtx = FinalCt
         if (!timeout) return fn(parentSignal);
 
         const ms = typeof timeout === "string" ? parseHumanTime(timeout) : timeout;
+        debugLog(`withTimeout: timeout armed`, { timeoutMs: ms });
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), ms);
+        const timer = setTimeout(() => {
+            debugLog(`withTimeout: timeout fired, aborting`);
+            controller.abort();
+        }, ms);
 
         if (parentSignal) {
             parentSignal.addEventListener("abort", () => controller.abort(), { once: true });

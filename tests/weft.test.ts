@@ -25,6 +25,7 @@ function makeResult(overrides: Partial<AgentResult> = {}): AgentResult {
   return {
     stdout: "ok",
     stderr: "",
+    thinking: "",
     exitCode: 0,
     duration: 100,
     ok: true,
@@ -225,6 +226,8 @@ describe("Weft Executor", () => {
         }),
       ]),
     );
+    expect(err.repairAttempted).toBe(false);
+    expect(mockInvokeAgent).toHaveBeenCalledTimes(2);
   });
 
   it("should handle parallel execution", async () => {
@@ -412,14 +415,15 @@ describe("Schema echo handling", () => {
     mockInvokeAgent.mockReset();
   });
 
-  it("should send an enhanced retry prompt when schema echo is detected", async () => {
-    // First response: TS-shape echo, second: valid data
+  it("should repair schema echo before retrying", async () => {
+    // First response: TS-shape echo; repair fails; regular retry succeeds.
     mockInvokeAgent
       .mockResolvedValueOnce(
         makeResult({
           stdout: "{ title: string, content: string, keywords: [string, ...] }",
         }),
       )
+      .mockResolvedValueOnce(makeResult({ stdout: "not repaired" }))
       .mockResolvedValueOnce(
         makeResult({
           stdout: JSON.stringify({
@@ -447,10 +451,14 @@ describe("Schema echo handling", () => {
       content: "World",
       keywords: ["a", "b"],
     });
-    expect(mockInvokeAgent).toHaveBeenCalledTimes(2);
+    expect(mockInvokeAgent).toHaveBeenCalledTimes(3);
 
-    // Second call (retry) must contain the strict format rules hint
-    const retryCall = mockInvokeAgent.mock.calls[1]?.[0] as string;
+    const repairCall = mockInvokeAgent.mock.calls[1]?.[0] as string;
+    expect(repairCall).toContain("valid JSON");
+    expect(repairCall).toContain("title: string");
+
+    // Third call (retry) must contain the strict format rules hint.
+    const retryCall = mockInvokeAgent.mock.calls[2]?.[0] as string;
     expect(retryCall).toContain("Strict format rules");
     expect(retryCall).not.toContain("BAD (schema echo");
     expect(retryCall).toContain("Begin your response with the character");
@@ -480,6 +488,57 @@ describe("Schema echo handling", () => {
     expect(err.message).toContain("Possible cause");
     expect(err.message).toContain("schema description");
   });
+
+  it("should repair malformed JSON and return the repaired value", async () => {
+    const malformed = '{"title":"Hello", "content": World}'
+    const repaired = JSON.stringify({ title: "Hello", content: "World" })
+    mockInvokeAgent
+      .mockResolvedValueOnce(makeResult({ stdout: malformed }))
+      .mockResolvedValueOnce(makeResult({ stdout: repaired }))
+
+    const RepairSchema = z.object({
+      title: z.string(),
+      content: z.string(),
+    })
+
+    const pipeline = weave("test")
+      .prompt("write", () => "write", { schema: RepairSchema })
+      .build()
+
+    const result = await pipeline.run({})
+
+    expect(result.write).toEqual({ title: "Hello", content: "World" })
+    expect(mockInvokeAgent).toHaveBeenCalledTimes(2)
+    const repairCall = mockInvokeAgent.mock.calls[1]?.[0] as string
+    expect(repairCall).toContain(malformed)
+    expect(repairCall).toContain("Determine whether the following model response is valid JSON")
+  })
+
+  it("should report failed JSON repair without retrying repair recursively", async () => {
+    const malformed = '{"title":"Hello", "content": World}'
+    mockInvokeAgent
+      .mockResolvedValueOnce(makeResult({ stdout: malformed }))
+      .mockResolvedValueOnce(makeResult({ stdout: "not JSON" }))
+      .mockResolvedValueOnce(makeResult({ stdout: malformed }))
+
+    const RepairSchema = z.object({
+      title: z.string(),
+      content: z.string(),
+    })
+
+    const pipeline = weave("test")
+      .prompt("write", () => "write", { schema: RepairSchema })
+      .build()
+
+    const err = (await pipeline.run({}).catch((e) => e)) as WeftSchemaValidationError
+
+    expect(err).toBeInstanceOf(WeftSchemaValidationError)
+    expect(err.repairAttempted).toBe(true)
+    expect(err.repairResponse).toBe("not JSON")
+    expect(err.repairError).toContain("Unexpected token")
+    expect(err.message).toContain("JSON repair attempt")
+    expect(mockInvokeAgent).toHaveBeenCalledTimes(3)
+  })
 
   it("should throw WeftSchemaValidationError with looksLikeSchemaEcho=false for plain invalid JSON", async () => {
     mockInvokeAgent.mockResolvedValue(

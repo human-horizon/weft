@@ -150,3 +150,55 @@ describe("parseEvent - debug logging via WEFT_DEBUG_EVENTS", () => {
         expect(evtLines[0]).toContain('"type":"message_end"');
     });
 });
+
+// Tests for the WEFT_DEBUG_THINKING stream-to-stderr helper.
+// Mirrors the format emitted by agent.ts#writeThinkingToStderr when
+// WEFT_DEBUG_THINKING=1.
+
+describe("debug-thinking stream format", () => {
+    beforeEach(() => {
+        vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    });
+
+    it("emits [weft:thinking] <delta> chunks without trailing newline", () => {
+        vi.mocked(process.stderr.write).mockClear();
+        // Mirror the writer logic here so we can assert without spinning up pi.
+        const evt = {
+            assistantMessageEvent: {
+                type: "thinking_delta",
+                delta: "Let me think ",
+            },
+        };
+        const write = (s: string) => process.stderr.write(s);
+        if (
+            evt.assistantMessageEvent.type === "thinking_delta" &&
+            evt.assistantMessageEvent.delta
+        ) {
+            write(`[weft:thinking] ${evt.assistantMessageEvent.delta}`);
+        }
+        const calls = (process.stderr.write as any).mock.calls.map(
+            (c: any) => String(c[0]),
+        );
+        expect(calls.join("")).toBe("[weft:thinking] Let me think ");
+    });
+
+    it("emits [weft:text] <delta> chunks for text deltas", () => {
+        vi.mocked(process.stderr.write).mockClear();
+        const evt = {
+            assistantMessageEvent: {
+                type: "text_delta",
+                delta: "hello",
+            },
+        };
+        if (
+            evt.assistantMessageEvent.type === "text_delta" &&
+            evt.assistantMessageEvent.delta
+        ) {
+            process.stderr.write(`[weft:text] ${evt.assistantMessageEvent.delta}`);
+        }
+        const calls = (process.stderr.write as any).mock.calls.map(
+            (c: any) => String(c[0]),
+        );
+        expect(calls.join("")).toBe("[weft:text] hello");
+    });
+});

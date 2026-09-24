@@ -3,9 +3,12 @@
 export interface AgentResult {
   stdout: string;
   stderr: string;
+  thinking: string;
   exitCode: number;
   duration: number;
   ok: boolean;
+  /** Set when the model/provider reported an error (e.g. timeout). */
+  error?: string;
 }
 
 // ── Step options ────────────────────────────────────────────────────────────

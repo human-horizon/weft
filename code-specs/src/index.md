@@ -31,7 +31,7 @@
 | `weave()` | Фабрика `Workflow`: возвращает новый экземпляр для построения пайплайна |
 | `setAgentPath(path: string)` | Устанавливает путь к исполняемому файлу агента (по умолчанию ищет в `@earendil-works/pi-coding-agent`) |
 | `clearSessions()` | Очищает файлы сессий агента (в `{agentDir}/sessions/...`) |
-| `resolveModel(tag: string): string` | Преобразует тег модели в полное имя, читая маппинг из `~/.ai/settings.json` |
+| `resolveModel(tag: string): string` | Преобразует тег модели в полное имя, читая маппинг из `.lore/weft/.env` |
 | `invokeAgent(prompt: string, opts)`: `Promise<AgentResult>` | Утилитарная функция для прямого вызова агента (не публичная часть API) |
 
 ---
@@ -172,15 +172,11 @@ wf
 
 ## Маппинг моделей
 
-Функция `resolveModel(tag)` читает маппинг из `~/.ai/settings.json`:
+Функция `resolveModel(tag)` читает маппинг из `.lore/weft/.env` (проектный файл, не коммитится):
 
-```json
-{
-  "modelMapping": {
-    "cheap": "ollama/llama3.2:1b",
-    "fast": "ollama/gemma2:2b"
-  }
-}
+```
+cheap=ollama/llama3.2:1b
+fast=ollama/gemma2:2b
 ```
 
 Если тег содержит `/` — считается полным именем (пропускает маппинг).

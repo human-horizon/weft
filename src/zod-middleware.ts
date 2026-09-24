@@ -2,6 +2,7 @@ import { z } from "zod"
 import type { AgentResult, PromptOpts } from "./types.js"
 import { invokeAgent } from "./agent.js"
 import { schemaToPrompt } from "./schema-to-prompt.js"
+import { debugLog, debugTimer } from "./debug.js"
 
 // ── Validation issue shape ───────────────────────────────────────────────────
 
@@ -18,6 +19,9 @@ export class WeftSchemaValidationError extends Error {
     validationIssues: ValidationIssue[]
     schemaDescription: string
     looksLikeSchemaEcho: boolean
+    repairAttempted: boolean
+    repairResponse?: string
+    repairError?: string
 
     constructor(opts: {
         rawResponse: string
@@ -25,6 +29,9 @@ export class WeftSchemaValidationError extends Error {
         validationIssues: ValidationIssue[]
         schemaDescription: string
         looksLikeSchemaEcho?: boolean
+        repairAttempted?: boolean
+        repairResponse?: string
+        repairError?: string
     }) {
         super(formatSchemaValidationError(opts))
         this.name = "WeftSchemaValidationError"
@@ -33,6 +40,9 @@ export class WeftSchemaValidationError extends Error {
         this.validationIssues = opts.validationIssues
         this.schemaDescription = opts.schemaDescription
         this.looksLikeSchemaEcho = opts.looksLikeSchemaEcho ?? false
+        this.repairAttempted = opts.repairAttempted ?? false
+        this.repairResponse = opts.repairResponse
+        this.repairError = opts.repairError
     }
 }
 
@@ -44,6 +54,9 @@ function formatSchemaValidationError(opts: {
     validationIssues: ValidationIssue[]
     schemaDescription: string
     looksLikeSchemaEcho?: boolean
+    repairAttempted?: boolean
+    repairResponse?: string
+    repairError?: string
 }): string {
     const issues = opts.validationIssues
         .map((issue) => `  - ${issue.path}: ${issue.message}`)
@@ -81,6 +94,26 @@ function formatSchemaValidationError(opts: {
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "The model response looks like a schema description (TypeScript-style type annotations like `: string`, `: number`, or tuple syntax like `[string, ...]`) rather than actual data. The agent may have echoed back the schema prompt instead of generating real values. Try rephrasing your prompt, switching to a more compliant model, or removing the schema requirement.",
         )
+    }
+
+    if (opts.repairAttempted) {
+        sections.push(
+            "",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "JSON repair attempt",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            opts.repairError
+                ? `Repair failed: ${opts.repairError}`
+                : "The repair model returned a response that did not pass JSON/schema validation.",
+        )
+        if (opts.repairResponse) {
+            sections.push(
+                "",
+                "Repair model response",
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                opts.repairResponse,
+            )
+        }
     }
 
     return sections.join("\n")
@@ -210,6 +243,78 @@ function buildRetryHint(err: unknown, extractedJson: string): string {
     ].join("\n")
 }
 
+// ── JSON repair ──────────────────────────────────────────────────────────────
+
+const MAX_REPAIR_INPUT_CHARS = 64 * 1024
+const MAX_REPAIR_RESPONSE_CHARS = 8 * 1024
+
+function buildJsonRepairPrompt(
+    malformedJson: string,
+    schemaDescription: string,
+): string {
+    const input = malformedJson.length > MAX_REPAIR_INPUT_CHARS
+        ? `${malformedJson.slice(0, MAX_REPAIR_INPUT_CHARS)}\n[truncated]`
+        : malformedJson
+
+    return [
+        "Determine whether the following model response is valid JSON.",
+        "If it is valid JSON, return the same data as normalized valid JSON.",
+        "If it is almost valid JSON, repair only its JSON syntax and preserve its meaning.",
+        "If it cannot be repaired, return an empty JSON object: {}.",
+        "Return ONLY valid JSON. No markdown fences, commentary, explanations, or schema repetition.",
+        "The repaired result must match this expected schema:",
+        schemaDescription,
+        "",
+        "Model response to check:",
+        input,
+    ].join("\n")
+}
+
+type JsonRepairResult<T> =
+    | { ok: true; value: T; response: string }
+    | { ok: false; response: string; error: string }
+
+async function repairJson<T>(
+    malformedJson: string,
+    schema: z.ZodType<T>,
+    schemaDescription: string,
+    opts: { signal?: AbortSignal; session?: string; model?: string; thinking?: string },
+): Promise<JsonRepairResult<T>> {
+    const repairPrompt = buildJsonRepairPrompt(malformedJson, schemaDescription)
+    debugLog("invokeWithSchema: JSON repair started", {
+        inputChars: malformedJson.length,
+        promptChars: repairPrompt.length,
+        model: opts.model,
+    })
+
+    const result = await invokeAgent(repairPrompt, opts)
+    if (result.error) {
+        debugLog("invokeWithSchema: JSON repair model error", { error: result.error })
+        return { ok: false, response: result.stdout, error: result.error }
+    }
+
+    const response = extractJson(result.stdout)
+    try {
+        const parsed = JSON.parse(response) as unknown
+        const value = schema.parse(parsed)
+        debugLog("invokeWithSchema: JSON repair succeeded", { responseChars: response.length })
+        return { ok: true, value, response }
+    } catch (err) {
+        const error = err instanceof z.ZodError
+            ? `${err.issues.length} schema issue(s)`
+            : String(err)
+        debugLog("invokeWithSchema: JSON repair failed", {
+            responseChars: response.length,
+            error,
+        })
+        return {
+            ok: false,
+            response: response.slice(0, MAX_REPAIR_RESPONSE_CHARS),
+            error,
+        }
+    }
+}
+
 // ── Invoke with schema validation ───────────────────────────────────────────
 
 export async function invokeWithSchema<T>(
@@ -220,26 +325,99 @@ export async function invokeWithSchema<T>(
     const maxRetries = 1
     const schemaDescription = schemaToPrompt(schema)
     let currentPrompt = `${prompt}\n\n${schemaDescription}`
+    let repairAttempted = false
+    let repairResponse: string | undefined
+    let repairError: string | undefined
+
+    debugLog(`invokeWithSchema: starting`, {
+        maxRetries,
+        schemaDescLen: schemaDescription.length,
+        promptLen: currentPrompt.length,
+        model: opts.model,
+        session: opts.session,
+    })
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        debugLog(`invokeWithSchema: attempt`, { attempt: `${attempt + 1}/${maxRetries + 1}` })
         const result = await invokeAgent(currentPrompt, opts)
 
+        if (result.error) {
+            debugLog(`invokeWithSchema: model error`, { error: result.error })
+            throw new Error(
+                `Model request failed (${opts.model ?? "default"}): ${result.error}`,
+            )
+        }
+
+        const parseTimer = debugTimer(`extractJson+schema.parse attempt ${attempt + 1}`)
+        const extractedJson = extractJson(result.stdout)
+        debugLog(`invokeWithSchema: extracted JSON`, { chars: extractedJson.length })
+
+        let parsed: unknown
         try {
-            const jsonText = extractJson(result.stdout)
-            const parsed = JSON.parse(jsonText) as unknown
-            return schema.parse(parsed)
+            parsed = JSON.parse(extractedJson) as unknown
         } catch (err) {
+            parseTimer()
+            const errMsg = String(err)
+            debugLog(`invokeWithSchema: JSON parse failed`, {
+                attempt: `${attempt + 1}/${maxRetries + 1}`,
+                error: errMsg,
+            })
+
+            if (!repairAttempted) {
+                repairAttempted = true
+                const repair = await repairJson(extractedJson, schema, schemaDescription, opts)
+                repairResponse = repair.response.slice(0, MAX_REPAIR_RESPONSE_CHARS)
+                if (repair.ok) {
+                    return repair.value
+                }
+                repairError = repair.error
+            }
+
+            if (attempt === maxRetries) {
+                debugLog(`invokeWithSchema: final failure, throwing`)
+                throw new WeftSchemaValidationError({
+                    rawResponse: result.stdout,
+                    extractedResponse: extractedJson,
+                    validationIssues: collectValidationIssuesFromError(err),
+                    schemaDescription,
+                    looksLikeSchemaEcho: looksLikeSchemaEcho(extractedJson),
+                    repairAttempted,
+                    repairResponse,
+                    repairError,
+                })
+            }
+            currentPrompt = `${prompt}\n\n${schemaDescription}\n\n${buildRetryHint(err, extractedJson)}`
+            continue
+        }
+
+        try {
+            const validated = schema.parse(parsed)
+            parseTimer()
+            debugLog(`invokeWithSchema: validation ok`, { attempt: `${attempt + 1}/${maxRetries + 1}` })
+            return validated
+        } catch (err) {
+            parseTimer()
+            const errMsg = `${err instanceof z.ZodError
+                ? `${err.issues.length} issue(s): ${err.issues[0]?.path.join(".") || "(root)"} ${err.issues[0]?.message || ""}`
+                : String(err)}`
+            debugLog(`invokeWithSchema: schema validation failed`, {
+                attempt: `${attempt + 1}/${maxRetries + 1}`,
+                error: errMsg,
+            })
             if (attempt === maxRetries) {
                 const extractedResponse = extractJson(result.stdout)
+                debugLog(`invokeWithSchema: final failure, throwing`)
                 throw new WeftSchemaValidationError({
                     rawResponse: result.stdout,
                     extractedResponse,
                     validationIssues: collectValidationIssuesFromError(err),
                     schemaDescription,
                     looksLikeSchemaEcho: looksLikeSchemaEcho(extractedResponse),
+                    repairAttempted,
+                    repairResponse,
+                    repairError,
                 })
             }
-            const extractedJson = extractJson(result.stdout)
             currentPrompt = `${prompt}\n\n${schemaDescription}\n\n${buildRetryHint(err, extractedJson)}`
         }
     }
